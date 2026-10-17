@@ -73,6 +73,10 @@ remotephone
 
 A static browser client: mirroring, control, typing, clipboard and audio, without the network scan, so you type the phone's address. Use the hosted copy at <https://dpk404.github.io/remote-phone/> or open `web/index.html` directly. Open `https://<phone-ip>:8765` once to accept the phone's certificate, then connect. See [web/README.md](https://github.com/dpk404/remote-phone/blob/main/web/README.md).
 
+### 4. Desktop Mode (optional, Samsung DeX)
+
+Stream a separate desktop instead of the phone screen: Samsung DeX on One UI 8+, the Android desktop elsewhere. Needs [Shizuku](https://shizuku.rikka.app/) (started on the phone via wireless debugging, no computer). See [docs/desktop-mode.md](docs/desktop-mode.md).
+
 ---
 
 ## Usage

@@ -69,4 +69,7 @@ dependencies {
     implementation("androidx.core:core:1.12.0")          // NotificationCompat
     implementation("androidx.activity:activity:1.8.2")  // ComponentActivity + registerForActivityResult
     implementation("org.java-websocket:Java-WebSocket:1.5.6")
+    // Optional desktop mode (DeX / Android desktop): a shell-privileged display via Shizuku
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }
