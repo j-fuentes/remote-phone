@@ -66,3 +66,15 @@ Type `ws://localhost` as host to use plain WebSocket against the mock. `test/e2e
 Chromium over CDP (connect, decode, tap, swipe, long press, back, scroll, keys, copy) and saves a screenshot.
 
 When the phone runs in [desktop mode](../docs/desktop-mode.md) (Samsung DeX / Android desktop), the client switches to real mouse and keyboard input: hover, right click, wheel, key events and shortcuts.
+
+## Served by the phone
+
+The APK also ships these two files. With **Web Client** switched on in the app, the phone serves them
+over HTTPS on port **8766** while mirroring, using its own certificate. The app shows
+`https://<phone-ip>:8766` and a **Share** button; the shared link carries `host`, `port`, `fp`
+(the certificate fingerprint) and `connect=1`, so the page connects to that phone at once and
+remembered computers work without pasting anything.
+
+Accept the certificate warning once when opening the page. Chrome/Edge remember it per host, which
+also covers the WebSocket on 8765; Firefox remembers it per port, so the page then shows a link to
+accept `https://<phone-ip>:8765` too.

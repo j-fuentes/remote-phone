@@ -74,6 +74,11 @@ class ScreenCaptureService : Service() {
             instance?.answer(id, allow)
         }
 
+        /** Starts or stops the embedded web client server of a running mirroring session. */
+        fun setWebClient(enabled: Boolean) {
+            instance?.let { s -> s.mainHandler.post { s.updateWebClient(enabled) } }
+        }
+
         /** Set by the activity while visible; called on the main thread when watchers or requests change. */
         @Volatile var onClientsChanged: ((List<String>) -> Unit)? = null
     }
@@ -109,6 +114,9 @@ class ScreenCaptureService : Service() {
 
     // Network
     private var webSocketServer: MirrorWebSocketServer? = null
+
+    // Browser client served from the phone (optional)
+    private var webClientServer: WebClientServer? = null
 
     // Desktop mode: a Shizuku-created display (DeX / Android desktop) instead of the phone screen
     private var desktop: DesktopSession? = null
@@ -273,6 +281,7 @@ class ScreenCaptureService : Service() {
 
         isStarting = false
         isRunning = true
+        updateWebClient(Prefs.webClient(this))
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
 
         // Start reading encoded video frames
@@ -522,6 +531,8 @@ class ScreenCaptureService : Service() {
         videoThread?.interrupt()
         audioThread?.interrupt()
 
+        updateWebClient(false)
+
         // Remove the desktop display (and its shell process) before its surface goes away
         desktop?.release()
         desktop = null
@@ -571,6 +582,26 @@ class ScreenCaptureService : Service() {
         webSocketServer = null
 
         Log.i(TAG, "Screen capture stopped")
+    }
+
+    private fun updateWebClient(enabled: Boolean) {
+        if (enabled && isRunning && webClientServer == null) {
+            val server = WebClientServer(this)
+            // Binding opens a socket: keep it off the main thread
+            Thread {
+                try {
+                    server.start()
+                    webClientServer = server
+                } catch (e: Exception) {
+                    Log.e(TAG, "Web client server failed to start", e)
+                    mainHandler.post { Toast.makeText(this, "Web client could not start: ${e.message}", Toast.LENGTH_LONG).show() }
+                }
+            }.start()
+        } else if (!enabled || !isRunning) {
+            val server = webClientServer ?: return
+            webClientServer = null
+            Thread { server.stop() }.start()
+        }
     }
 
     private fun createNotificationChannel() {

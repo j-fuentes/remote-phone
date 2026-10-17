@@ -34,6 +34,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var requestsCard: View
     private lateinit var requestsContainer: LinearLayout
 
+    private lateinit var webToggle: Switch
+    private lateinit var webSubtext: TextView
+    private lateinit var webUrlRow: View
+    private lateinit var webUrlText: TextView
+
     private var isStreaming = false
 
     private val projectionLauncher = registerForActivityResult(
@@ -91,6 +96,20 @@ class MainActivity : ComponentActivity() {
             audioSubtext.text = "Requires Android 10+"
         }
 
+        // Web client served from the phone: the URL opens a browser client pointed at this phone
+        webToggle = findViewById(R.id.webToggle)
+        webSubtext = findViewById(R.id.webSubtext)
+        webUrlRow = findViewById(R.id.webUrlRow)
+        webUrlText = findViewById(R.id.webUrlText)
+        webToggle.isChecked = Prefs.webClient(this)
+        webToggle.setOnCheckedChangeListener { _, isChecked ->
+            Prefs.set(this, Prefs.WEB_CLIENT, isChecked)
+            ScreenCaptureService.setWebClient(isChecked)
+            showWebClient()
+        }
+        webUrlText.setOnClickListener { shareWebClient() }
+        findViewById<Button>(R.id.webShareButton).setOnClickListener { shareWebClient() }
+
         // Accessibility settings button
         accessibilityButton.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -127,6 +146,7 @@ class MainActivity : ComponentActivity() {
         updateAccessibilityStatus()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) updateKeyboardStatus()
         ipText.text = getDeviceIpAddress()
+        showWebClient()
         ScreenCaptureService.onClientsChanged = ::showStreaming
         ScreenCaptureService.clients()?.let(::showStreaming)
     }
@@ -178,6 +198,33 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { onClick() }
         }
 
+    /** Short address on screen; the shared link carries the full query (host, port, fingerprint). */
+    private fun showWebClient() {
+        val on = webToggle.isChecked
+        val ip = getDeviceIpAddress()
+        val hasIp = ip.firstOrNull()?.isDigit() == true
+        webUrlRow.visibility = if (on && hasIp) View.VISIBLE else View.GONE
+        webUrlText.text = "https://$ip:${WebClientServer.PORT}"
+        webSubtext.text = when {
+            !on -> "Open this phone from any browser, nothing to install"
+            !hasIp -> "Connect to WiFi to get an address"
+            !isStreaming -> "Available while mirroring. Accept the certificate warning once in the browser."
+            else -> "Open in a browser on the same network. Accept the certificate warning once."
+        }
+    }
+
+    private fun shareWebClient() {
+        val ip = getDeviceIpAddress()
+        if (ip.firstOrNull()?.isDigit() != true) return
+        val link = WebClientServer.url(ip)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "RemotePhone")
+            putExtra(Intent.EXTRA_TEXT, link)
+        }
+        startActivity(Intent.createChooser(send, "Share web client link"))
+    }
+
     private fun requestScreenCapture() {
         val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
@@ -197,6 +244,7 @@ class MainActivity : ComponentActivity() {
         }
 
         showStreaming(emptyList())
+        showWebClient()
     }
 
     private fun stopScreenCapture() {
@@ -211,6 +259,7 @@ class MainActivity : ComponentActivity() {
         statusText.text = "Ready to stream"
         statusDot.text = "○"
         statusDot.setTextColor(getColor(R.color.text_muted))
+        showWebClient()
     }
 
     private fun updateAccessibilityStatus() {
