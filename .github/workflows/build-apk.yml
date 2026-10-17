@@ -3,8 +3,8 @@ name: Build APK (desktop mode branch)
 # Debug build for testing the dex-desktop branch on a phone; releases still come from release.yml
 on:
   push:
-    branches: [dex-desktop]
-    paths: ['android/**', '.github/workflows/build-apk.yml']
+    branches: [dex-desktop, embedded-web]
+    paths: ['android/**', 'web/index.html', 'web/remotephone.js', '.github/workflows/build-apk.yml']
   workflow_dispatch:
 
 jobs:

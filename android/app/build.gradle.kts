@@ -58,11 +58,24 @@ android {
         jvmTarget = "17"
     }
 
+    // The browser client (../web) ships inside the APK, served by WebClientServer
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/webclient"))
+
     dependenciesInfo {
         // Disable dependency metadata in APK signing block — F-Droid scanner rejects it
         includeInApk = false
         includeInBundle = false
     }
+}
+
+val copyWebClient by tasks.registering(Sync::class) {
+    from(rootProject.file("../web")) { include("index.html", "remotephone.js") }
+    into(layout.buildDirectory.dir("generated/webclient/web"))
+}
+tasks.named("preBuild") { dependsOn(copyWebClient) }
+// Every task reading assets must run after the copy (Gradle rejects implicit dependencies)
+tasks.configureEach {
+    if (name != "copyWebClient" && (name.contains("Assets") || name.startsWith("lint"))) dependsOn(copyWebClient)
 }
 
 dependencies {

@@ -8,6 +8,7 @@ object Prefs {
     const val ASK = "ask_before_connect"      // the owner must allow a new computer on the phone
     const val REMEMBER = "remember_clients"   // Allow also remembers the computer for later sessions
     const val MULTIPLE = "allow_multiple"     // more than one computer at a time
+    const val WEB_CLIENT = "web_client"     // serve the browser client from the phone while mirroring
     const val DESKTOP = "desktop_mode"        // stream a Shizuku-created desktop display instead of the phone screen
     private const val DESKTOP_SIZE = "desktop_size"
 
@@ -26,6 +27,7 @@ object Prefs {
     fun remember(ctx: Context) = prefs(ctx).getBoolean(REMEMBER, false)
     fun multiple(ctx: Context) = prefs(ctx).getBoolean(MULTIPLE, false)
     fun desktop(ctx: Context) = prefs(ctx).getBoolean(DESKTOP, false)
+    fun webClient(ctx: Context) = prefs(ctx).getBoolean(WEB_CLIENT, false)
 
     fun desktopSize(ctx: Context): Triple<Int, Int, Int> =
         DESKTOP_PRESETS.getOrElse(prefs(ctx).getInt(DESKTOP_SIZE, 2)) { DESKTOP_PRESETS[2] }
