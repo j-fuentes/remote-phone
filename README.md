@@ -101,6 +101,10 @@ remotephone
 
 The launcher script creates a virtual environment and installs the package into it.
 
+### 3. GNOME Extension (optional)
+
+Connection profiles in the GNOME top bar, each one launching the desktop client connected to its phone. See [gnome-extension/README.md](gnome-extension/README.md). The client also accepts `--host`, `--port`, `--name`, `--audio` and `--fullscreen` (`remotephone --help`).
+
 ---
 
 ## Usage

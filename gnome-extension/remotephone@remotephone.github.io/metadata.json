@@ -1,0 +1,15 @@
+{
+  "uuid": "remotephone@remotephone.github.io",
+  "name": "RemotePhone",
+  "description": "Connection profiles for RemotePhone in the top bar: pick a phone and the RemotePhone client opens connected to it.",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49"
+  ],
+  "url": "https://github.com/dpk404/remote-phone",
+  "settings-schema": "org.gnome.shell.extensions.remotephone",
+  "version": 1
+}

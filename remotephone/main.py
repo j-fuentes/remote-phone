@@ -4,6 +4,7 @@ RemotePhone Linux Client
 Mirror and control your Android phone from your Linux desktop.
 """
 
+import argparse
 import sys
 import logging
 from pathlib import Path
@@ -37,8 +38,21 @@ def app_icon() -> QIcon:
     return icon
 
 
+def parse_args(argv):
+    """Optional connection settings, used by launchers such as the GNOME extension's profiles.
+    Unknown arguments are left for Qt."""
+    parser = argparse.ArgumentParser(prog="remotephone", description="Mirror and control your Android phone.")
+    parser.add_argument("--host", help="phone IP or host name: skip the network scan and connect at once")
+    parser.add_argument("--port", type=int, default=8765, help="phone port (default 8765)")
+    parser.add_argument("--name", help="profile name, shown in the window title")
+    parser.add_argument("--audio", action="store_true", help="stream the phone's audio once connected")
+    parser.add_argument("--fullscreen", action="store_true", help="start fullscreen")
+    return parser.parse_known_args(argv)
+
+
 def main():
-    app = QApplication(sys.argv)
+    args, qt_args = parse_args(sys.argv[1:])
+    app = QApplication(sys.argv[:1] + qt_args)
     app.setApplicationName("RemotePhone")
     app.setOrganizationName("RemotePhone")  # QSettings: client id and trusted phones
     app.setWindowIcon(app_icon())
@@ -49,8 +63,11 @@ def main():
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     app.setFont(font)
 
-    window = MainWindow()
-    window.show()
+    window = MainWindow(host=args.host, port=args.port, name=args.name, audio=args.audio)
+    if args.fullscreen:
+        window.showFullScreen()
+    else:
+        window.show()
 
     sys.exit(app.exec())
 

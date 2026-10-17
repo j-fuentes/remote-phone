@@ -174,9 +174,11 @@ class VideoWidget(QWidget):
 class MainWindow(QMainWindow):
     """Main application window with connection controls, video display, and status bar."""
 
-    def __init__(self):
+    def __init__(self, host: str | None = None, port: int = 8765, name: str | None = None, audio: bool = False):
         super().__init__()
-        self.setWindowTitle("RemotePhone")
+        self._title = f"RemotePhone — {name}" if name else "RemotePhone"
+        self._want_audio = audio  # turn audio on as soon as the phone allows us
+        self.setWindowTitle(self._title)
         self.resize(420, 860)
 
         # Components
@@ -199,8 +201,14 @@ class MainWindow(QMainWindow):
         self.fps_timer.timeout.connect(self._update_fps)
         self.fps_timer.start(1000)
 
-        # Auto-scan for phone on startup
-        self.scanner.start_scan()
+        if host:
+            # A known phone (e.g. a launcher profile): no scan, connect right away
+            self.ip_input.setText(host)
+            self.port_input.setText(str(port))
+            QTimer.singleShot(0, self._on_connect_clicked)
+        else:
+            # Auto-scan for phone on startup
+            self.scanner.start_scan()
 
     def _setup_ui(self):
         central = QWidget()
@@ -450,7 +458,7 @@ class MainWindow(QMainWindow):
             self.video_widget.image = None
             self.video_widget.hint = _IDLE_HINT
             self.video_widget.update()
-            self.setWindowTitle("RemotePhone")
+            self.setWindowTitle(self._title)
 
     def _on_reconnecting(self, attempt: int):
         self.status_label.setText(f"Reconnecting... (attempt {attempt})")
@@ -463,7 +471,7 @@ class MainWindow(QMainWindow):
 
         self.device_label.setText(f"{device}")
         self.resolution_label.setText(f"{sw}×{sh}")
-        self.setWindowTitle(f"RemotePhone — {device} (Android {android_ver})")
+        self.setWindowTitle(f"{self._title} — {device} (Android {android_ver})")
 
         if info.get("audioAvailable", False):
             self.audio_checkbox.setEnabled(True)
@@ -475,6 +483,9 @@ class MainWindow(QMainWindow):
         elif state == "granted":
             self.status_label.setText("● Connected")
             self.video_widget.hint = _IDLE_HINT
+            # Commands sent before the phone's approval are ignored, so audio waits until now
+            if self._want_audio and self.audio_checkbox.isEnabled() and not self.audio_checkbox.isChecked():
+                self.audio_checkbox.setChecked(True)
         self.video_widget.update()
 
     def _on_clipboard_received(self, content: str):

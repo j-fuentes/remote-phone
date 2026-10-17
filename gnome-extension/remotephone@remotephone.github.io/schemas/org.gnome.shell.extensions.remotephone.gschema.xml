@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.remotephone" path="/org/gnome/shell/extensions/remotephone/">
+    <key name="profiles" type="s">
+      <default>'[]'</default>
+      <summary>Connection profiles</summary>
+      <description>JSON array of {id, name, host, port, audio, fullscreen}.</description>
+    </key>
+    <key name="client-command" type="s">
+      <default>'remotephone'</default>
+      <summary>Client command</summary>
+      <description>Command line that starts the RemotePhone desktop client; profile options are appended.</description>
+    </key>
+  </schema>
+</schemalist>
