@@ -105,6 +105,10 @@ The launcher script creates a virtual environment and installs the package into 
 
 The `web/` folder is a static browser client with the same features as the desktop client: two files, no build step, no server-side code. Host it anywhere static or open `web/index.html` directly, open `https://<phone-ip>:8765` once to accept the phone's certificate, then connect. See [web/README.md](web/README.md).
 
+### 4. Desktop Mode (optional, Samsung DeX)
+
+Stream a separate desktop instead of the phone screen: Samsung DeX on One UI 8+, the Android desktop elsewhere. Needs [Shizuku](https://shizuku.rikka.app/) (started on the phone via wireless debugging, no computer). See [docs/desktop-mode.md](docs/desktop-mode.md).
+
 ---
 
 ## Usage

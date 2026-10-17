@@ -25,7 +25,9 @@ class MirrorWebSocketServer(
     private val audioAvailable: Boolean,
     private val onControlCommand: (String) -> Unit,
     private val onClientsChanged: () -> Unit,
-    private val onApprovalRequest: (id: String, label: String) -> Unit
+    private val onApprovalRequest: (id: String, label: String) -> Unit,
+    /** Streaming a desktop display (DeX / Android desktop) instead of the phone screen. */
+    private val desktop: Boolean = false
 ) : WebSocketServer(InetSocketAddress(port)) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -246,6 +248,8 @@ class MirrorWebSocketServer(
         put("screenHeight", screenHeight)
         put("audioAvailable", audioAvailable)
         put("androidVersion", Build.VERSION.RELEASE)
+        // Clients switch to real mouse/keyboard input on a desktop display
+        put("desktop", desktop)
     }.toString()
 
     fun updateScreenSize(width: Int, height: Int) {

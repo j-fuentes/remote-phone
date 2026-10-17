@@ -9,6 +9,7 @@ and logs every control command it receives.
     python3 -m venv .venv && .venv/bin/pip install websockets av numpy
     .venv/bin/python web/test/mock_phone.py            # ws://localhost:8765  (plain, for automation)
     .venv/bin/python web/test/mock_phone.py --tls      # wss:// with a throwaway self-signed cert
+    .venv/bin/python web/test/mock_phone.py --desktop  # desktop mode (info.desktop, 1280x720)
 """
 import argparse, asyncio, hashlib, hmac, json, os, secrets, ssl, struct, subprocess, tempfile, time
 
@@ -16,11 +17,12 @@ import websockets
 
 W, H = 540, 1170
 FAKE_FP = "AB" * 32
+DESKTOP = False
 
 def encode_stream():
     """10 s of a moving test pattern, H.264 baseline, keyframe every second (like the phone)."""
     import av, numpy as np
-    out = os.path.join(tempfile.gettempdir(), "remotephone-mock.h264")
+    out = os.path.join(tempfile.gettempdir(), f"remotephone-mock-{W}x{H}.h264")
     if not os.path.exists(out):
         with av.open(out, "w", format="h264") as c:
             s = c.add_stream("libx264", rate=30)
@@ -67,7 +69,7 @@ async def handler(ws, fp):
     hello = json.loads(await ws.recv())
     print("<-", hello, flush=True)
     await ws.send(json.dumps({"type": "info", "device": "Mock Pixel", "screenWidth": W, "screenHeight": H,
-                              "audioAvailable": True, "androidVersion": "15"}))
+                              "audioAvailable": True, "androidVersion": "16", "desktop": DESKTOP}))
     cid = hello.get("id")
     if cid in approved:
         nonce = secrets.token_hex(32)
@@ -117,7 +119,10 @@ async def handler(ws, fp):
 
 async def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--tls", action="store_true"); ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--desktop", action="store_true", help="pretend to stream a desktop display (DeX)")
     a = ap.parse_args()
+    global W, H, DESKTOP
+    if a.desktop: W, H, DESKTOP = 1280, 720, True
     global STREAM; STREAM = encode_stream()
     print(f"config {len(STREAM[0])}B, {len(STREAM[1])} frames", flush=True)
     sslctx, fp = None, FAKE_FP

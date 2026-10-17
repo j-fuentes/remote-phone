@@ -64,3 +64,5 @@ uv venv /tmp/rp-venv && uv pip install --python /tmp/rp-venv/bin/python websocke
 
 Type `ws://localhost` as host to use plain WebSocket against the mock. `test/e2e_cdp.mjs` drives a headless
 Chromium over CDP (connect, decode, tap, swipe, long press, back, scroll, keys, copy) and saves a screenshot.
+
+When the phone runs in [desktop mode](../docs/desktop-mode.md) (Samsung DeX / Android desktop), the client switches to real mouse and keyboard input: hover, right click, wheel, key events and shortcuts.

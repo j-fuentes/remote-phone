@@ -169,6 +169,87 @@
                 android:background="@drawable/button_primary" />
         </LinearLayout>
 
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DESKTOP MODE"
+            android:textSize="11sp"
+            android:textColor="@color/text_hint"
+            android:letterSpacing="0.15"
+            android:layout_marginTop="32dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/card_background"
+            android:padding="16dp"
+            android:layout_marginTop="16dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Stream a desktop (Samsung DeX)"
+                        android:textSize="14sp"
+                        android:textColor="@color/text_secondary" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Start Mirroring opens a separate desktop display instead of mirroring the phone: Samsung DeX on One UI 8+, the Android desktop elsewhere. The phone stays free and can be locked. Needs Shizuku."
+                        android:textSize="11sp"
+                        android:textColor="@color/text_hint"
+                        android:layout_marginTop="2dp" />
+                </LinearLayout>
+
+                <Switch
+                    android:id="@+id/desktopToggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/desktopStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text=""
+                android:textSize="13sp"
+                android:textColor="@color/text_secondary" />
+
+            <Button
+                android:id="@+id/shizukuButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="12dp"
+                android:text="Grant Shizuku access"
+                android:textColor="@color/text_primary"
+                android:background="@drawable/button_primary" />
+
+            <Button
+                android:id="@+id/desktopSizeButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="12dp"
+                android:text="Size: 1920 × 1080"
+                android:textColor="@color/text_primary"
+                android:background="@drawable/button_primary" />
+        </LinearLayout>
+
     </LinearLayout>
 
 </ScrollView>

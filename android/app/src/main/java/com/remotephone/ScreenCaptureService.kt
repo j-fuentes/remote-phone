@@ -27,8 +27,10 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.view.Surface
+import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import com.remotephone.desktop.DesktopSession
 import org.java_websocket.server.DefaultSSLWebSocketServerFactory
 import java.nio.ByteBuffer
 
@@ -108,7 +110,11 @@ class ScreenCaptureService : Service() {
     // Network
     private var webSocketServer: MirrorWebSocketServer? = null
 
+    // Desktop mode: a Shizuku-created display (DeX / Android desktop) instead of the phone screen
+    private var desktop: DesktopSession? = null
+
     private var isRunning = false
+    private var isStarting = false  // between Start and the video source being ready
     private var screenWidth = 0
     private var screenHeight = 0
     private var density = 0
@@ -155,13 +161,14 @@ class ScreenCaptureService : Service() {
     }
 
     private fun startCapture(resultCode: Int, data: Intent) {
-        if (isRunning) return
+        if (isRunning || isStarting) return
+        isStarting = true
 
         // Create notification channel and start foreground
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
 
-        // Get MediaProjection
+        // Get MediaProjection (phone screen, and the audio capture in both modes)
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, data)
 
@@ -171,6 +178,39 @@ class ScreenCaptureService : Service() {
             }
         }, null)
 
+        // Setup audio capture (Android 10+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            audioAvailable = setupAudioCapture()
+        }
+
+        if (!Prefs.desktop(this)) {
+            startPhoneVideo()
+            finishStart()
+            return
+        }
+        // Desktop mode: the display comes from Shizuku's shell process, which starts asynchronously.
+        // Any failure falls back to mirroring the phone screen, with the reason shown on the phone.
+        val session = DesktopSession(this)
+        session.bind(5_000) { bound ->
+            if (!isStarting) {  // stopped while binding
+                session.release()
+                return@bind
+            }
+            if (bound && startDesktopVideo(session)) {
+                desktop = session
+            } else {
+                val reason = session.lastError ?: "unknown error"
+                Log.w(TAG, "Desktop mode unavailable: $reason")
+                Toast.makeText(this, "Desktop mode unavailable ($reason). Mirroring the phone screen.", Toast.LENGTH_LONG).show()
+                session.release()
+                startPhoneVideo()
+            }
+            finishStart()
+        }
+    }
+
+    /** Mirror the phone's own screen through MediaProjection. */
+    private fun startPhoneVideo() {
         readScreenSize()
 
         val encoder = createEncoder()
@@ -187,12 +227,29 @@ class ScreenCaptureService : Service() {
             surface,
             null, null
         )
+    }
 
-        // Setup audio capture (Android 10+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            audioAvailable = setupAudioCapture()
+    /** A separate desktop display at the configured size, rendered straight into the encoder. */
+    private fun startDesktopVideo(session: DesktopSession): Boolean {
+        val (width, height, dpi) = Prefs.desktopSize(this)
+        screenWidth = width and (-2)
+        screenHeight = height and (-2)
+        density = dpi
+        val encoder = try { createEncoder() } catch (e: Exception) { Log.e(TAG, "Desktop encoder failed", e); return false }
+        val surface = encoder.createInputSurface()
+        encoder.start()
+        if (!session.createDisplay(screenWidth, screenHeight, density, surface)) {
+            try { encoder.stop(); encoder.release(); surface.release() } catch (_: Exception) {}
+            return false
         }
+        videoEncoder = encoder
+        inputSurface = surface
+        Log.i(TAG, "Desktop display ${session.displayId}: ${screenWidth}x${screenHeight} @ ${density}dpi")
+        return true
+    }
 
+    /** Video source ready: open the server and start streaming. */
+    private fun finishStart() {
         // Start WebSocket server
         webSocketServer = MirrorWebSocketServer(
             port = WS_PORT,
@@ -200,9 +257,13 @@ class ScreenCaptureService : Service() {
             screenWidth = screenWidth,
             screenHeight = screenHeight,
             audioAvailable = audioAvailable,
-            onControlCommand = { RemoteAccessibilityService.handleCommand(it) },
+            onControlCommand = { cmd ->
+                // Desktop mode injects on its own display; what it doesn't handle goes to accessibility
+                if (desktop?.handle(cmd) != true) RemoteAccessibilityService.handleCommand(cmd)
+            },
             onClientsChanged = { mainHandler.post(publishClients) },
-            onApprovalRequest = { id, label -> requestApproval(id, label) }
+            onApprovalRequest = { id, label -> requestApproval(id, label) },
+            desktop = desktop != null
         )
         // Everything, video included, travels inside TLS under the phone's own certificate
         webSocketServer!!.setWebSocketFactory(DefaultSSLWebSocketServerFactory(Tls.serverContext()))
@@ -210,12 +271,15 @@ class ScreenCaptureService : Service() {
         webSocketServer!!.isReuseAddr = true
         webSocketServer!!.start()
 
+        isStarting = false
         isRunning = true
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
 
         // Start reading encoded video frames
+        val encoder = videoEncoder!!
         videoThread = Thread({ readVideoEncoder(encoder) }, "VideoEncoderThread").apply { start() }
 
-        Log.i(TAG, "Screen capture started: ${screenWidth}x${screenHeight} on port $WS_PORT")
+        Log.i(TAG, "Screen capture started: ${screenWidth}x${screenHeight} on port $WS_PORT" + if (desktop != null) " (desktop)" else "")
     }
 
     /**
@@ -278,7 +342,8 @@ class ScreenCaptureService : Service() {
     // here too, and a 180 degree flip keeps the size, so only a real size change restarts video.
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (isRunning && readScreenSize()) restartVideo()
+        // The desktop display keeps its own size whatever the phone does
+        if (isRunning && desktop == null && readScreenSize()) restartVideo()
     }
 
     /**
@@ -446,8 +511,9 @@ class ScreenCaptureService : Service() {
     }
 
     private fun stopCapture() {
-        if (!isRunning) return
+        if (!isRunning && !isStarting) return
         isRunning = false
+        isStarting = false
 
         // Restore phone volume if audio was streaming
         try { setAudioEnabled(false) } catch (_: Exception) {}
@@ -455,6 +521,10 @@ class ScreenCaptureService : Service() {
         // Stop threads
         videoThread?.interrupt()
         audioThread?.interrupt()
+
+        // Remove the desktop display (and its shell process) before its surface goes away
+        desktop?.release()
+        desktop = null
 
         // Release video encoder
         try {
@@ -563,7 +633,7 @@ class ScreenCaptureService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("RemotePhone")
+            .setContentTitle(if (desktop != null) "RemotePhone · desktop" else "RemotePhone")
             .setContentText(
                 if (clients.isEmpty()) "Mirroring, no client connected"
                 else "Mirroring to ${clients.joinToString(", ")}"

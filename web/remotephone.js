@@ -451,6 +451,131 @@ const KEY_COMMANDS = {
 };
 const CTRL_COMMANDS = { a: 'select_all', c: 'copy', x: 'cut' }; // v is handled through the paste event
 
+
+// ---------------------------------------------------------------------------------------------
+// Desktop mode (info.desktop): the phone streams a separate desktop display (Samsung DeX /
+// Android desktop) and injects real mouse and keyboard events there, so the browser sends
+// pointer buttons, hover, wheel and Android keycodes instead of touch gestures.
+// ---------------------------------------------------------------------------------------------
+
+// KeyboardEvent.code -> android.view.KeyEvent keycode
+const ANDROID_KEYCODES = (() => {
+  const m = {
+    Enter: 66, NumpadEnter: 160, Escape: 111, Backspace: 67, Tab: 61, Space: 62, Delete: 112, Insert: 124,
+    Home: 122, End: 123, PageUp: 92, PageDown: 93, ArrowLeft: 21, ArrowRight: 22, ArrowUp: 19, ArrowDown: 20,
+    Minus: 69, Equal: 70, BracketLeft: 71, BracketRight: 72, Backslash: 73, Semicolon: 74, Quote: 75,
+    Backquote: 68, Comma: 55, Period: 56, Slash: 76, IntlBackslash: 73, CapsLock: 115, NumLock: 143, ScrollLock: 116,
+    PrintScreen: 120, Pause: 121, ContextMenu: 82,
+    ShiftLeft: 59, ShiftRight: 60, ControlLeft: 113, ControlRight: 114, AltLeft: 57, AltRight: 58, MetaLeft: 117, MetaRight: 118,
+    NumpadDivide: 154, NumpadMultiply: 155, NumpadSubtract: 156, NumpadAdd: 157, NumpadDecimal: 158, Numpad0: 144,
+  };
+  for (let i = 0; i < 26; i++) m['Key' + String.fromCharCode(65 + i)] = 29 + i;
+  for (let i = 0; i < 10; i++) m['Digit' + i] = 7 + i;
+  for (let i = 1; i <= 9; i++) m['Numpad' + i] = 144 + i;
+  for (let i = 1; i <= 12; i++) m['F' + i] = 130 + i;
+  return m;
+})();
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const META = { SHIFT: 0x41, ALT: 0x12, CTRL: 0x3000, META: 0x30000 }; // *_ON | *_LEFT_ON
+
+function androidMeta(e) {
+  let m = 0;
+  if (e.shiftKey) m |= META.SHIFT;
+  if (e.altKey) m |= META.ALT;
+  // On a Mac, Cmd acts as Ctrl so Cmd+C / Cmd+Z / Cmd+A do what Mac users expect
+  if (e.ctrlKey || (IS_MAC && e.metaKey)) m |= META.CTRL;
+  if (e.metaKey && !IS_MAC) m |= META.META;
+  return m;
+}
+
+/** Browser MouseEvent.button -> Android MotionEvent.BUTTON_* (buttons bitmasks already match). */
+const ANDROID_BUTTON = { 0: 1, 1: 4, 2: 2, 3: 8, 4: 16 };
+
+const DesktopInput = {
+  pendingMove: null,
+  wheelH: 0, wheelV: 0, wheelPos: null,
+  rafScheduled: false,
+  downKeys: new Set(),
+
+  schedule(mapper) {
+    if (this.rafScheduled) return;
+    this.rafScheduled = true;
+    requestAnimationFrame(() => this.flush(mapper));
+  },
+
+  flush(mapper) {
+    this.rafScheduled = false;
+    if (this.pendingMove) { mapper.send(this.pendingMove); this.pendingMove = null; }
+    if (this.wheelH || this.wheelV) {
+      const c = (v) => Math.round(Math.max(-10, Math.min(10, v)) * 100) / 100;
+      mapper.send({ type: 'wheel', x: this.wheelPos.x, y: this.wheelPos.y, h: c(this.wheelH), v: c(this.wheelV) });
+      this.wheelH = this.wheelV = 0;
+    }
+  },
+
+  pos(mapper, e) {
+    const p = mapper.toPhone(e);
+    return { x: Math.round(p.x), y: Math.round(p.y) };
+  },
+
+  down(mapper, e) {
+    e.preventDefault();
+    mapper.canvas.setPointerCapture(e.pointerId);
+    this.flush(mapper);
+    const p = this.pos(mapper, e);
+    mapper.send({ type: 'mouse', action: 'down', x: p.x, y: p.y, buttons: e.buttons || 1, button: ANDROID_BUTTON[e.button] || 1 });
+  },
+
+  move(mapper, e) {
+    const p = this.pos(mapper, e);
+    this.pendingMove = { type: 'mouse', action: 'move', x: p.x, y: p.y, buttons: e.buttons };
+    this.schedule(mapper);
+  },
+
+  up(mapper, e) {
+    this.flush(mapper);
+    const p = this.pos(mapper, e);
+    mapper.send({ type: 'mouse', action: 'up', x: p.x, y: p.y, buttons: e.buttons, button: ANDROID_BUTTON[e.button] || 1 });
+  },
+
+  wheel(mapper, e) {
+    e.preventDefault();
+    // ~100 px per wheel notch; Android VSCROLL > 0 scrolls up, HSCROLL > 0 scrolls right
+    const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
+    this.wheelH += (e.deltaX * unit) / 100;
+    this.wheelV += (-e.deltaY * unit) / 100;
+    this.wheelPos = this.pos(mapper, e);
+    this.schedule(mapper);
+  },
+
+  key(mapper, e, isDown) {
+    if (isDown && e.key === 'F11') { e.preventDefault(); toggleFullscreen(); return true; }
+    if (e.isComposing) return false;
+    const altGr = e.getModifierState && e.getModifierState('AltGraph');
+    const shortcut = (e.ctrlKey || e.metaKey || e.altKey) && !altGr;
+    // Let Ctrl/Cmd+V reach the paste event, which types the computer's clipboard
+    if (isDown && shortcut && e.code === 'KeyV' && !e.altKey) return false;
+    // Plain characters go as text, so the computer's keyboard layout is respected (ñ, ç, é...)
+    if (isDown && !shortcut && e.key.length >= 1 && [...e.key].length === 1) {
+      mapper.send({ type: 'text', content: e.key });
+      return true;
+    }
+    let code = e.code;
+    if (IS_MAC && (code === 'MetaLeft' || code === 'MetaRight')) code = code === 'MetaLeft' ? 'ControlLeft' : 'ControlRight';
+    const keycode = ANDROID_KEYCODES[code];
+    if (!keycode) return false;
+    if (!isDown && !this.downKeys.has(code)) return false; // its keydown went as text
+    if (isDown) this.downKeys.add(code); else this.downKeys.delete(code);
+    mapper.send({ type: 'keycode', action: isDown ? 'down' : 'up', keycode, meta: androidMeta(e), repeat: e.repeat ? 1 : 0 });
+    return true;
+  },
+
+  releaseKeys(mapper) {
+    for (const code of this.downKeys) mapper.send({ type: 'keycode', action: 'up', keycode: ANDROID_KEYCODES[code], meta: 0, repeat: 0 });
+    this.downKeys.clear();
+  },
+};
+
 class InputMapper {
   constructor(canvas, send) {
     this.canvas = canvas;
@@ -459,6 +584,7 @@ class InputMapper {
     this.hAccum = 0; this.hTime = 0; this.hFired = false;
     this.vAccum = 0;
     this.lastScroll = 0;
+    this.desktop = false;
 
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
     canvas.addEventListener('pointermove', (e) => this.onMove(e));
@@ -475,8 +601,15 @@ class InputMapper {
     return { x: Math.min(Math.max(x, 0), this.canvas.width - 1), y: Math.min(Math.max(y, 0), this.canvas.height - 1) };
   }
 
+  setDesktop(on) {
+    if (this.desktop && !on) DesktopInput.releaseKeys(this);
+    this.desktop = on;
+    this.press = null;
+  }
+
   onDown(e) {
     ui.stage.focus({ preventScroll: true });
+    if (this.desktop) { DesktopInput.down(this, e); return; }
     if (e.button === 1 || e.button === 2) { e.preventDefault(); this.send({ type: 'key', action: 'back' }); return; }
     if (e.button !== 0) return;
     e.preventDefault();
@@ -487,6 +620,7 @@ class InputMapper {
   }
 
   onMove(e) {
+    if (this.desktop) { DesktopInput.move(this, e); return; }
     const s = this.press;
     if (!s) return;
     const p = this.toPhone(e);
@@ -495,6 +629,7 @@ class InputMapper {
   }
 
   onUp(e) {
+    if (this.desktop) { DesktopInput.up(this, e); return; }
     const s = this.press;
     if (!s || e.button !== 0) return;
     this.press = null;
@@ -513,6 +648,7 @@ class InputMapper {
   }
 
   onWheel(e) {
+    if (this.desktop) { DesktopInput.wheel(this, e); return; }
     e.preventDefault();
     const now = performance.now();
     const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
@@ -542,8 +678,13 @@ class InputMapper {
     this.send({ type: 'scroll', x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, dx: Math.round(dx * 10) / 10, dy: Math.round(-step * VSCROLL_GAIN * 10) / 10 });
   }
 
+  onKeyUp(e) {
+    return this.desktop ? DesktopInput.key(this, e, false) : false;
+  }
+
   /** Returns true when the key was consumed. */
   onKey(e) {
+    if (this.desktop) return DesktopInput.key(this, e, true);
     if (e.isComposing) return false;
     if (e.key === 'F11') { e.preventDefault(); toggleFullscreen(); return true; }
     const mod = e.ctrlKey || e.metaKey;
@@ -675,6 +816,8 @@ class PhoneConnection {
     switch (msg.type) {
       case 'info':
         this.info = msg;
+        this.input.setDesktop(!!msg.desktop);
+        document.body.classList.toggle('desktop', !!msg.desktop);
         if (this.video.setScreenSize) this.video.setScreenSize(msg.screenWidth, msg.screenHeight);
         ui.audio.disabled = !msg.audioAvailable;
         if (!this.granted) setStatus('Connected to ' + (msg.device || 'phone') + ' — waiting for approval…');
@@ -687,7 +830,7 @@ class PhoneConnection {
         } else if (msg.state === 'granted') {
           this.granted = true;
           updateButtons();
-          setStatus('Connected to ' + ((this.info && this.info.device) || 'phone') + (this.video instanceof MsePipeline ? ' (MSE)' : ''), 'ok');
+          setStatus('Connected to ' + ((this.info && this.info.device) || 'phone') + (this.info && this.info.desktop ? ' · desktop' : '') + (this.video instanceof MsePipeline ? ' (MSE)' : ''), 'ok');
           setHint('Waiting for the first picture…');
           ui.stage.focus({ preventScroll: true });
           if (ui.audio.checked) this.sendCommand({ type: 'toggle_audio', enabled: true });
@@ -772,6 +915,7 @@ class PhoneConnection {
 
   onDisconnected() {
     this.granted = false;
+    this.input.setDesktop(false);
     this.video?.reset();
     ui.audio.disabled = true;
     ui.audio.checked = false;
@@ -869,6 +1013,12 @@ document.addEventListener('keydown', (e) => {
   if (!conn.granted || typingInPageField(e)) return;
   if (conn.input.onKey(e)) e.preventDefault();
 });
+document.addEventListener('keyup', (e) => {
+  if (!conn.granted || typingInPageField(e)) return;
+  if (conn.input.onKeyUp(e)) e.preventDefault();
+});
+// Keys held while the window loses focus would stay down on the phone
+window.addEventListener('blur', () => { if (conn.input.desktop) DesktopInput.releaseKeys(conn.input); });
 
 // Ctrl/Cmd+V: type the computer's clipboard into the phone; empty clipboard falls back to the phone's paste
 document.addEventListener('paste', (e) => {
