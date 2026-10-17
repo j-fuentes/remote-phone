@@ -101,6 +101,10 @@ remotephone
 
 The launcher script creates a virtual environment and installs the package into it.
 
+### 3. Web Client (optional, nothing to install)
+
+The `web/` folder is a static browser client with the same features as the desktop client: two files, no build step, no server-side code. Host it anywhere static or open `web/index.html` directly, open `https://<phone-ip>:8765` once to accept the phone's certificate, then connect. See [web/README.md](web/README.md).
+
 ---
 
 ## Usage
