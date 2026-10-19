@@ -71,7 +71,8 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="..."
-                        android:textSize="20sp"
+                        android:textSize="18sp"
+                        android:lineSpacingExtra="4dp"
                         android:textColor="@color/text_primary"
                         android:textStyle="bold"
                         android:fontFamily="monospace"
@@ -248,32 +249,9 @@
                 android:id="@+id/webUrlRow"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginTop="12dp"
-                android:visibility="gone">
-
-                <TextView
-                    android:id="@+id/webUrlText"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/text_primary"
-                    android:textIsSelectable="true" />
-
-                <Button
-                    android:id="@+id/webShareButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="40dp"
-                    android:layout_marginStart="12dp"
-                    android:paddingStart="16dp"
-                    android:paddingEnd="16dp"
-                    android:text="Share"
-                    android:textColor="@color/text_primary"
-                    android:background="@drawable/button_primary" />
-            </LinearLayout>
+                android:orientation="vertical"
+                android:layout_marginTop="8dp"
+                android:visibility="gone" />
         </LinearLayout>
 
         <!-- Start/Stop Button -->

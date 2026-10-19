@@ -2,6 +2,14 @@ package com.remotephone
 
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Typeface
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
@@ -15,8 +23,6 @@ import android.widget.Switch
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
-import java.net.Inet4Address
-import java.net.NetworkInterface
 
 class MainActivity : ComponentActivity() {
 
@@ -36,8 +42,16 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var webToggle: Switch
     private lateinit var webSubtext: TextView
-    private lateinit var webUrlRow: View
-    private lateinit var webUrlText: TextView
+    private lateinit var webUrlRow: LinearLayout
+
+    // Refresh the addresses when WiFi or a VPN comes or goes, debounced
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val refreshAddresses = Runnable { ipText.text = addressesText(); showWebClient() }
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) { queueAddressRefresh() }
+        override fun onLost(network: Network) { queueAddressRefresh() }
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) { queueAddressRefresh() }
+    }
 
     private var isStreaming = false
 
@@ -70,7 +84,7 @@ class MainActivity : ComponentActivity() {
         requestsContainer = findViewById(R.id.requestsContainer)
 
         // Show device IP
-        ipText.text = getDeviceIpAddress()
+        ipText.text = addressesText()
         portText.text = "${ScreenCaptureService.WS_PORT}"
 
         // Start/Stop button
@@ -100,15 +114,12 @@ class MainActivity : ComponentActivity() {
         webToggle = findViewById(R.id.webToggle)
         webSubtext = findViewById(R.id.webSubtext)
         webUrlRow = findViewById(R.id.webUrlRow)
-        webUrlText = findViewById(R.id.webUrlText)
         webToggle.isChecked = Prefs.webClient(this)
         webToggle.setOnCheckedChangeListener { _, isChecked ->
             Prefs.set(this, Prefs.WEB_CLIENT, isChecked)
             ScreenCaptureService.setWebClient(isChecked)
             showWebClient()
         }
-        webUrlText.setOnClickListener { shareWebClient() }
-        findViewById<Button>(R.id.webShareButton).setOnClickListener { shareWebClient() }
 
         // Accessibility settings button
         accessibilityButton.setOnClickListener {
@@ -143,15 +154,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        try {
+            // Without NOT_VPN removed, the request would skip VPN networks
+            val request = NetworkRequest.Builder().removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build()
+            getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, networkCallback)
+        } catch (_: Exception) {}
         updateAccessibilityStatus()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) updateKeyboardStatus()
-        ipText.text = getDeviceIpAddress()
+        ipText.text = addressesText()
         showWebClient()
         ScreenCaptureService.onClientsChanged = ::showStreaming
         ScreenCaptureService.clients()?.let(::showStreaming)
     }
 
     override fun onPause() {
+        try { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) } catch (_: Exception) {}
+        uiHandler.removeCallbacks(refreshAddresses)
         ScreenCaptureService.onClientsChanged = null
         super.onPause()
     }
@@ -198,29 +216,77 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { onClick() }
         }
 
-    /** Short address on screen; the shared link carries the full query (host, port, fingerprint). */
+    private fun queueAddressRefresh() {
+        uiHandler.removeCallbacks(refreshAddresses)
+        uiHandler.postDelayed(refreshAddresses, 400)  // onLost fires before the network leaves the list
+    }
+
+    /** Every reachable address, local network first, labelled when there is more than one. */
+    private fun addressesText(): String {
+        val list = NetworkAddresses.list(this)
+        return when {
+            list.isEmpty() -> "Not connected to WiFi"
+            list.size == 1 && list[0].kind == NetworkAddresses.Kind.WIFI -> list[0].ip
+            else -> list.joinToString("\n") { "${it.ip}  · ${it.kind.label}" }
+        }
+    }
+
+    /** One URL per address, each with its own Share button; the shared link carries host, port and fingerprint. */
     private fun showWebClient() {
         val on = webToggle.isChecked
-        val ip = getDeviceIpAddress()
-        val hasIp = ip.firstOrNull()?.isDigit() == true
-        webUrlRow.visibility = if (on && hasIp) View.VISIBLE else View.GONE
-        webUrlText.text = "https://$ip:${WebClientServer.PORT}"
+        val addresses = NetworkAddresses.list(this)
+        webUrlRow.removeAllViews()
+        webUrlRow.visibility = if (on && addresses.isNotEmpty()) View.VISIBLE else View.GONE
+        if (on) for (address in addresses) webUrlRow.addView(urlRow(address, addresses.size > 1))
         webSubtext.text = when {
             !on -> "Open this phone from any browser, nothing to install"
-            !hasIp -> "Connect to WiFi to get an address"
+            addresses.isEmpty() -> "Connect to WiFi to get an address"
             !isStreaming -> "Available while mirroring. Accept the certificate warning once in the browser."
             else -> "Open in a browser on the same network. Accept the certificate warning once."
         }
     }
 
-    private fun shareWebClient() {
-        val ip = getDeviceIpAddress()
-        if (ip.firstOrNull()?.isDigit() != true) return
-        val link = WebClientServer.url(ip)
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun urlRow(address: NetworkAddresses.Address, labelled: Boolean): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(TextView(this).apply {
+            text = "https://${address.ip}:${WebClientServer.PORT}"
+            textSize = 15f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(getColor(R.color.text_primary))
+            setTextIsSelectable(true)
+        })
+        if (labelled) texts.addView(TextView(this).apply {
+            text = when (address.kind) {
+                NetworkAddresses.Kind.VPN -> "VPN · for devices on the same VPN"
+                NetworkAddresses.Kind.MOBILE -> "Mobile data · usually not reachable"
+                else -> address.kind.label
+            }
+            textSize = 11f
+            setTextColor(getColor(R.color.text_hint))
+        })
+        row.addView(texts, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(Button(this).apply {
+            text = "Share"
+            setTextColor(getColor(R.color.text_primary))
+            setBackgroundResource(R.drawable.button_primary)
+            setPadding(dp(16), 0, dp(16), 0)
+            setOnClickListener { shareWebClient(address.ip) }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply { marginStart = dp(12) })
+        return row
+    }
+
+    private fun shareWebClient(ip: String) {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_SUBJECT, "RemotePhone")
-            putExtra(Intent.EXTRA_TEXT, link)
+            putExtra(Intent.EXTRA_TEXT, WebClientServer.url(ip))
         }
         startActivity(Intent.createChooser(send, "Share web client link"))
     }
@@ -303,24 +369,5 @@ class MainActivity : ComponentActivity() {
                 keyboardButton.text = "Enable RemotePhone Keyboard"
             }
         }
-    }
-
-    private fun getDeviceIpAddress(): String {
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
-            while (interfaces.hasMoreElements()) {
-                val iface = interfaces.nextElement()
-                if (iface.isLoopback || !iface.isUp) continue
-                val addresses = iface.inetAddresses
-                while (addresses.hasMoreElements()) {
-                    val addr = addresses.nextElement()
-                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                        return addr.hostAddress ?: "Unknown"
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-        return "Not connected to WiFi"
     }
 }
