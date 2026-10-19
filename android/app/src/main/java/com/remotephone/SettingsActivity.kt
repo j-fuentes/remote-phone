@@ -175,6 +175,7 @@ class SettingsActivity : ComponentActivity() {
                 isChecked = kind.name !in disabled
                 setOnCheckedChangeListener { _, on ->
                     Prefs.setInterfaceAllowed(this@SettingsActivity, kind.name, on)
+                    ScreenCaptureService.rebind()
                     showInterfacesHint()
                 }
             })
@@ -188,7 +189,7 @@ class SettingsActivity : ComponentActivity() {
         val anyOpen = present.any { Prefs.interfaceAllowed(this, it.kind.name) }
         findViewById<TextView>(R.id.interfacesHint).text =
             if (present.isNotEmpty() && !anyOpen) "⚠ Every connected network is switched off: no computer can connect."
-            else "Connections arriving on a network switched off here are closed at once. Applies to mirroring and the web client."
+            else "While mirroring, the phone only listens on the networks switched on here (mirroring and web client)."
     }
 
     private fun showDesktopSize(width: Int) {

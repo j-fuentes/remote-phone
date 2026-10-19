@@ -94,7 +94,7 @@
                 android:id="@+id/interfacesHint"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Connections arriving on a network switched off here are closed at once. Applies to mirroring and the web client."
+                android:text="While mirroring, the phone only listens on the networks switched on here (mirroring and web client)."
                 android:textSize="11sp"
                 android:textColor="@color/text_hint"
                 android:layout_marginTop="2dp" />

@@ -79,6 +79,11 @@ class ScreenCaptureService : Service() {
             instance?.webSocketServer?.refreshInfo()
         }
 
+        /** Re-reads the allowed networks (Settings changed) and listens on exactly those. */
+        fun rebind() {
+            instance?.let { s -> s.mainHandler.post { s.rebindServers() } }
+        }
+
         /** Starts or stops the embedded web client server of a running mirroring session. */
         fun setWebClient(enabled: Boolean) {
             instance?.let { s -> s.mainHandler.post { s.updateWebClient(enabled) } }
@@ -282,7 +287,8 @@ class ScreenCaptureService : Service() {
         webSocketServer!!.setWebSocketFactory(DefaultSSLWebSocketServerFactory(Tls.serverContext()))
         // A quick stop and start must not fail on the previous socket still closing
         webSocketServer!!.isReuseAddr = true
-        webSocketServer!!.start()
+        webSocketServer!!.start(NetworkAddresses.bindAddresses(this))
+        watchNetworks(true)
 
         isStarting = false
         isRunning = true
@@ -537,6 +543,7 @@ class ScreenCaptureService : Service() {
         audioThread?.interrupt()
 
         updateWebClient(false)
+        watchNetworks(false)
 
         // Remove the desktop display (and its shell process) before its surface goes away
         desktop?.release()
@@ -589,13 +596,51 @@ class ScreenCaptureService : Service() {
         Log.i(TAG, "Screen capture stopped")
     }
 
+    // Networks come and go (WiFi off, VPN on): listen on the allowed addresses of the moment
+    private val rebindRunnable = Runnable { rebindServers() }
+    private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) { queueRebind() }
+        override fun onLost(network: android.net.Network) { queueRebind() }
+        override fun onLinkPropertiesChanged(network: android.net.Network, lp: android.net.LinkProperties) { queueRebind() }
+    }
+
+    private fun queueRebind() {
+        mainHandler.removeCallbacks(rebindRunnable)
+        mainHandler.postDelayed(rebindRunnable, 500)
+    }
+
+    private fun watchNetworks(on: Boolean) {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+        try {
+            if (on) {
+                val request = android.net.NetworkRequest.Builder()
+                    .removeCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build()
+                cm.registerNetworkCallback(request, networkCallback)
+            } else {
+                cm.unregisterNetworkCallback(networkCallback)
+                mainHandler.removeCallbacks(rebindRunnable)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun rebindServers() {
+        if (!isRunning) return
+        val ws = webSocketServer
+        val web = webClientServer
+        Thread {
+            val addresses = NetworkAddresses.bindAddresses(this)
+            ws?.rebind(addresses)
+            web?.rebind(addresses)
+        }.start()
+    }
+
     private fun updateWebClient(enabled: Boolean) {
         if (enabled && isRunning && webClientServer == null) {
             val server = WebClientServer(this)
             // Binding opens a socket: keep it off the main thread
             Thread {
                 try {
-                    server.start()
+                    server.start(NetworkAddresses.bindAddresses(this))
                     webClientServer = server
                 } catch (e: Exception) {
                     Log.e(TAG, "Web client server failed to start", e)

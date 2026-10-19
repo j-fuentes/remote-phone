@@ -8,8 +8,10 @@ import android.os.Looper
 import android.util.Log
 import org.java_websocket.WebSocket
 import org.java_websocket.handshake.ClientHandshake
+import org.java_websocket.WebSocketServerFactory
 import org.java_websocket.server.WebSocketServer
 import org.json.JSONObject
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.security.MessageDigest
@@ -18,7 +20,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 class MirrorWebSocketServer(
-    port: Int,
+    private val port: Int,
     private val context: Context,
     private var screenWidth: Int,
     private var screenHeight: Int,
@@ -28,7 +30,68 @@ class MirrorWebSocketServer(
     private val onApprovalRequest: (id: String, label: String) -> Unit,
     /** Streaming a desktop display (DeX / Android desktop) instead of the phone screen. */
     private val desktop: Boolean = false
-) : WebSocketServer(InetSocketAddress(port)) {
+) {
+
+    // One listening socket per allowed address (WiFi, VPN... as chosen in Settings), so the port is
+    // simply closed on the other networks. Java-WebSocket binds a single address per server, so
+    // each address gets its own small Listener; all state below is shared between them.
+    private inner class Listener(val address: InetAddress) : WebSocketServer(InetSocketAddress(address, port)) {
+        @Volatile var failed = false
+        override fun onOpen(conn: WebSocket, handshake: ClientHandshake) = this@MirrorWebSocketServer.onOpen(conn, handshake)
+        override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) =
+            this@MirrorWebSocketServer.onClose(conn, code, reason, remote)
+        override fun onMessage(conn: WebSocket, message: String) = this@MirrorWebSocketServer.onMessage(conn, message)
+        override fun onError(conn: WebSocket?, ex: Exception) {
+            if (conn == null) failed = true  // bind failed: the next rebind retries this address
+            this@MirrorWebSocketServer.onError(conn, ex)
+        }
+        override fun onStart() {
+            connectionLostTimeout = 0  // Disable connection lost timeout
+            Log.i(TAG, "WebSocket listening on ${address.hostAddress}:$port")
+        }
+    }
+
+    private val listeners = HashMap<String, Listener>()  // by IP, guarded by itself
+    private var factory: WebSocketServerFactory? = null
+    var isReuseAddr = true
+
+    fun setWebSocketFactory(f: WebSocketServerFactory) { factory = f }
+
+    /** Starts listening on [addresses]. */
+    fun start(addresses: List<InetAddress>) = rebind(addresses)
+
+    /** Listens on exactly [addresses]: new ones are opened, dropped ones closed with their connections. */
+    fun rebind(addresses: List<InetAddress>) {
+        val wanted = addresses.associateBy { it.hostAddress ?: "" }.filterKeys { it.isNotEmpty() }
+        val stale = ArrayList<Listener>()
+        val fresh = ArrayList<Listener>()
+        synchronized(listeners) {
+            listeners.entries.removeIf { (ip, l) -> (ip !in wanted || l.failed).also { if (it) stale.add(l) } }
+            for ((ip, address) in wanted) {
+                if (ip in listeners) continue
+                val l = Listener(address)
+                factory?.let { l.setWebSocketFactory(it) }
+                l.isReuseAddr = isReuseAddr
+                listeners[ip] = l
+                fresh.add(l)
+            }
+        }
+        // stop() blocks while it closes connections: keep it off the caller's thread
+        if (stale.isNotEmpty()) Thread { stale.forEach { try { it.stop(1000) } catch (_: Exception) {} } }.start()
+        fresh.forEach { it.start() }
+        Log.i(TAG, "Listening on ${wanted.keys.joinToString(", ").ifEmpty { "no address" }}")
+    }
+
+    fun stop(timeout: Int) {
+        val all = synchronized(listeners) { listeners.values.toList().also { listeners.clear() } }
+        all.forEach { try { it.stop(timeout) } catch (_: Exception) {} }
+    }
+
+    private fun broadcast(text: String) {
+        val all = synchronized(listeners) { listeners.values.flatMap { it.connections } }
+        for (conn in all) try { if (conn.isOpen) conn.send(text) } catch (_: Exception) {}
+    }
+
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -66,7 +129,7 @@ class MirrorWebSocketServer(
     private val awaitingAuth = HashMap<WebSocket, Auth>()
     private val random = SecureRandom()
 
-    override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
+    private fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
         Log.i(TAG, "Client connected: ${conn.remoteSocketAddress}")
         // The owner may have switched off the network this connection came in on (WiFi, VPN...)
         if (!NetworkAddresses.isAllowedLocal(context, conn.localSocketAddress?.address)) {
@@ -75,7 +138,7 @@ class MirrorWebSocketServer(
         }
     }
 
-    override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) {
+    private fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) {
         val changed = synchronized(lock) {
             awaitingAuth.remove(conn)
             val wasPending = pending.entries.firstOrNull { it.value.conn === conn }?.let {
@@ -98,7 +161,7 @@ class MirrorWebSocketServer(
         pending.map { PendingRequest(it.key, it.value.name, it.value.address) }
     }
 
-    override fun onMessage(conn: WebSocket, message: String) {
+    private fun onMessage(conn: WebSocket, message: String) {
         try {
             val json = JSONObject(message)
             val type = json.getString("type")
@@ -285,13 +348,8 @@ class MirrorWebSocketServer(
         }
     }
 
-    override fun onError(conn: WebSocket?, ex: Exception) {
+    private fun onError(conn: WebSocket?, ex: Exception) {
         Log.e(TAG, "WebSocket error: ${ex.message}", ex)
-    }
-
-    override fun onStart() {
-        Log.i(TAG, "WebSocket server started on port $port")
-        connectionLostTimeout = 0  // Disable connection lost timeout
     }
 
     /**
