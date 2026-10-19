@@ -6,6 +6,7 @@ import android.util.Log
 import java.io.BufferedInputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -46,21 +47,39 @@ class WebClientServer(private val context: Context, private val port: Int = PORT
         )
     }
 
-    private var socket: ServerSocket? = null
+    private val sockets = HashMap<String, ServerSocket>()  // one per allowed address, by IP
     private val pool = Executors.newFixedThreadPool(4) { Thread(it, "WebClientServer") }
 
-    fun start() {
-        val server = Tls.serverContext().serverSocketFactory.createServerSocket() as SSLServerSocket
-        server.reuseAddress = true
-        server.bind(InetSocketAddress(port))
-        socket = server
-        Thread({ acceptLoop(server) }, "WebClientAccept").start()
-        Log.i(TAG, "Web client served on port $port")
+    fun start(addresses: List<InetAddress>) = rebind(addresses)
+
+    /** Listens on exactly [addresses]; call off the main thread (binding opens sockets). */
+    fun rebind(addresses: List<InetAddress>) {
+        val wanted = addresses.associateBy { it.hostAddress ?: "" }.filterKeys { it.isNotEmpty() }
+        synchronized(sockets) {
+            sockets.entries.removeIf { (ip, s) ->
+                (ip !in wanted || s.isClosed).also { if (it) try { s.close() } catch (_: IOException) {} }
+            }
+            for ((ip, address) in wanted) {
+                if (ip in sockets) continue
+                try {
+                    val server = Tls.serverContext().serverSocketFactory.createServerSocket() as SSLServerSocket
+                    server.reuseAddress = true
+                    server.bind(InetSocketAddress(address, port))
+                    sockets[ip] = server
+                    Thread({ acceptLoop(server) }, "WebClientAccept").start()
+                    Log.i(TAG, "Web client served on $ip:$port")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not listen on $ip:$port", e)  // retried on the next rebind
+                }
+            }
+        }
     }
 
     fun stop() {
-        try { socket?.close() } catch (_: IOException) {}
-        socket = null
+        synchronized(sockets) {
+            sockets.values.forEach { try { it.close() } catch (_: IOException) {} }
+            sockets.clear()
+        }
         pool.shutdownNow()
     }
 

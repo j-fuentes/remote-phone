@@ -24,6 +24,10 @@ object NetworkAddresses {
 
     data class Address(val ip: String, val kind: Kind)
 
+    /** What the servers listen on: the allowed addresses, plus loopback for apps on the phone itself. */
+    fun bindAddresses(context: Context): List<InetAddress> =
+        allowed(context).mapNotNull { runCatching { InetAddress.getByName(it.ip) }.getOrNull() } + InetAddress.getLoopbackAddress()
+
     /** Addresses on networks the owner has not switched off in Settings. */
     fun allowed(context: Context): List<Address> = list(context).filter { Prefs.interfaceAllowed(context, it.kind.name) }
 
