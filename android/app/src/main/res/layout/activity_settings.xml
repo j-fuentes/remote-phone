@@ -20,6 +20,93 @@
             android:textStyle="bold"
             android:layout_marginTop="32dp" />
 
+<TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="PHONE"
+            android:textSize="11sp"
+            android:textColor="@color/text_hint"
+            android:letterSpacing="0.15"
+            android:layout_marginTop="32dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/card_background"
+            android:padding="16dp"
+            android:layout_marginTop="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Phone name"
+                android:textSize="14sp"
+                android:textColor="@color/text_secondary" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Shown to computers and in the browser tab. Empty uses the model name."
+                android:textSize="11sp"
+                android:textColor="@color/text_hint"
+                android:layout_marginTop="2dp" />
+
+            <EditText
+                android:id="@+id/phoneNameInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:inputType="textCapWords"
+                android:maxLength="40"
+                android:singleLine="true"
+                android:importantForAutofill="no"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_hint"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="NETWORKS"
+            android:textSize="11sp"
+            android:textColor="@color/text_hint"
+            android:letterSpacing="0.15"
+            android:layout_marginTop="32dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/card_background"
+            android:padding="16dp"
+            android:layout_marginTop="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Accept connections through"
+                android:textSize="14sp"
+                android:textColor="@color/text_secondary" />
+
+            <TextView
+                android:id="@+id/interfacesHint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Connections arriving on a network switched off here are closed at once. Applies to mirroring and the web client."
+                android:textSize="11sp"
+                android:textColor="@color/text_hint"
+                android:layout_marginTop="2dp" />
+
+            <LinearLayout
+                android:id="@+id/interfacesContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginTop="8dp" />
+        </LinearLayout>
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -240,14 +327,20 @@
                 android:textColor="@color/text_primary"
                 android:background="@drawable/button_primary" />
 
-            <Button
-                android:id="@+id/desktopSizeButton"
+            <TextView
+                android:id="@+id/desktopSizeLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Desktop size"
+                android:textSize="13sp"
+                android:textColor="@color/text_secondary" />
+
+            <SeekBar
+                android:id="@+id/desktopSizeBar"
                 android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="12dp"
-                android:text="Size: 1920 × 1080"
-                android:textColor="@color/text_primary"
-                android:background="@drawable/button_primary" />
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" />
         </LinearLayout>
 
     </LinearLayout>

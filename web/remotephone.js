@@ -816,6 +816,7 @@ class PhoneConnection {
     switch (msg.type) {
       case 'info':
         this.info = msg;
+        if (msg.device) document.title = msg.device + ' — RemotePhone';
         this.input.setDesktop(!!msg.desktop);
         document.body.classList.toggle('desktop', !!msg.desktop);
         if (this.video.setScreenSize) this.video.setScreenSize(msg.screenWidth, msg.screenHeight);

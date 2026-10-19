@@ -223,8 +223,9 @@ class MainActivity : ComponentActivity() {
 
     /** Every reachable address, local network first, labelled when there is more than one. */
     private fun addressesText(): String {
-        val list = NetworkAddresses.list(this)
+        val list = NetworkAddresses.allowed(this)
         return when {
+            list.isEmpty() && NetworkAddresses.list(this).isNotEmpty() -> "All networks switched off in Settings"
             list.isEmpty() -> "Not connected to WiFi"
             list.size == 1 && list[0].kind == NetworkAddresses.Kind.WIFI -> list[0].ip
             else -> list.joinToString("\n") { "${it.ip}  · ${it.kind.label}" }
@@ -234,7 +235,7 @@ class MainActivity : ComponentActivity() {
     /** One URL per address, each with its own Share button; the shared link carries host, port and fingerprint. */
     private fun showWebClient() {
         val on = webToggle.isChecked
-        val addresses = NetworkAddresses.list(this)
+        val addresses = NetworkAddresses.allowed(this)
         webUrlRow.removeAllViews()
         webUrlRow.visibility = if (on && addresses.isNotEmpty()) View.VISIBLE else View.GONE
         if (on) for (address in addresses) webUrlRow.addView(urlRow(address, addresses.size > 1))

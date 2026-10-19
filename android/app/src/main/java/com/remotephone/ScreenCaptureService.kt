@@ -74,6 +74,11 @@ class ScreenCaptureService : Service() {
             instance?.answer(id, allow)
         }
 
+        /** Tells connected clients the phone's (new) name. */
+        fun refreshInfo() {
+            instance?.webSocketServer?.refreshInfo()
+        }
+
         /** Starts or stops the embedded web client server of a running mirroring session. */
         fun setWebClient(enabled: Boolean) {
             instance?.let { s -> s.mainHandler.post { s.updateWebClient(enabled) } }

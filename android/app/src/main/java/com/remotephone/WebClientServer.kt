@@ -79,6 +79,8 @@ class WebClientServer(private val context: Context, private val port: Int = PORT
 
     private fun serve(client: Socket) {
         client.use { s ->
+            // Closed before the TLS handshake when its network is switched off in Settings
+            if (!NetworkAddresses.isAllowedLocal(context, s.localAddress)) return
             try {
                 s.soTimeout = 10_000
                 val input = BufferedInputStream(s.getInputStream())

@@ -68,6 +68,11 @@ class MirrorWebSocketServer(
 
     override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
         Log.i(TAG, "Client connected: ${conn.remoteSocketAddress}")
+        // The owner may have switched off the network this connection came in on (WiFi, VPN...)
+        if (!NetworkAddresses.isAllowedLocal(context, conn.localSocketAddress?.address)) {
+            Log.i(TAG, "Rejected ${conn.remoteSocketAddress}: network disabled in Settings")
+            conn.close(CLOSE_REJECTED, "This network is disabled on the phone")
+        }
     }
 
     override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) {
@@ -243,7 +248,7 @@ class MirrorWebSocketServer(
     /** Device and stream info: the hello reply, and rebroadcast when the screen rotates. */
     private fun infoJson(): String = JSONObject().apply {
         put("type", "info")
-        put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
+        put("device", Prefs.phoneName(context))
         put("screenWidth", screenWidth)
         put("screenHeight", screenHeight)
         put("audioAvailable", audioAvailable)
@@ -251,6 +256,9 @@ class MirrorWebSocketServer(
         // Clients switch to real mouse/keyboard input on a desktop display
         put("desktop", desktop)
     }.toString()
+
+    /** Re-sends the device info, e.g. after the phone was renamed. */
+    fun refreshInfo() = broadcast(infoJson())
 
     fun updateScreenSize(width: Int, height: Int) {
         screenWidth = width
