@@ -4,7 +4,7 @@ name: Build APK (desktop mode branch)
 on:
   push:
     branches: [dex-desktop, embedded-web]
-    paths: ['android/**', 'web/index.html', 'web/remotephone.js', '.github/workflows/build-apk.yml']
+    paths: ['android/**', 'web/**', '.github/workflows/build-apk.yml']
   workflow_dispatch:
 
 jobs:
