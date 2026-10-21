@@ -69,7 +69,7 @@ android {
 }
 
 val copyWebClient by tasks.registering(Sync::class) {
-    from(rootProject.file("../web")) { include("index.html", "remotephone.js") }
+    from(rootProject.file("../web")) { include("index.html", "remotephone.js", "sw.js", "manifest.webmanifest", "*.png") }
     into(layout.buildDirectory.dir("generated/webclient/web"))
 }
 tasks.named("preBuild") { dependsOn(copyWebClient) }
