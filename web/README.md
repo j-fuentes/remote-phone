@@ -64,3 +64,18 @@ uv venv /tmp/rp-venv && uv pip install --python /tmp/rp-venv/bin/python websocke
 
 Type `ws://localhost` as host to use plain WebSocket against the mock. `test/e2e_cdp.mjs` drives a headless
 Chromium over CDP (connect, decode, tap, swipe, long press, back, scroll, keys, copy) and saves a screenshot.
+
+## Install it as an app (PWA)
+
+The folder is also a web app manifest plus a service worker, so the browser can install it: its own
+window, its own icon, no address bar, and the shell is cached so it opens offline (`sw.js`).
+
+- **Chrome/Edge (desktop or Android):** an **Install** button appears in the header; the browser menu
+  has the same entry. Needs `https://` or `localhost` — a plain `http://` address on the LAN cannot
+  register a service worker.
+- **Safari (iOS/iPadOS and macOS):** **Share → Add to Home Screen** / **File → Add to Dock**.
+- **Firefox:** no install prompt on desktop; Firefox for Android has **Add to Home screen**.
+
+Only the shell is cached. The phone is always reached live over the WebSocket, so nothing about the
+mirroring works offline, and the certificate warning for `https://<phone-ip>:8765` still has to be
+accepted once per browser.
