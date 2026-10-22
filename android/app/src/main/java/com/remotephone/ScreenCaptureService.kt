@@ -6,8 +6,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ServiceInfo
+import android.os.PowerManager
 import android.content.res.Configuration
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -48,6 +52,8 @@ class ScreenCaptureService : Service() {
         const val REQUEST_CHANNEL_ID = "remote_phone_requests"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
+        /** ACTION_START: mirror the phone screen even when desktop mode is on (desktop mode failed). */
+        const val EXTRA_FORCE_PHONE = "force_phone"
         const val WS_PORT = 8765
 
         // Frame type markers for the binary protocol
@@ -99,6 +105,25 @@ class ScreenCaptureService : Service() {
         fun isActive(): Boolean = instance?.let { it.isRunning || it.isStarting } == true
 
         fun isStarting(): Boolean = instance?.isStarting == true
+
+        /**
+         * Desktop mode on Android 12+ with Shizuku ready: the picture comes from Shizuku's display
+         * and the audio from its remote submix, so no screen capture consent is asked at all.
+         */
+        fun canStartWithoutConsent(ctx: Context): Boolean =
+            Prefs.desktop(ctx) && Build.VERSION.SDK_INT >= 31 && DesktopSession.state() == DesktopSession.State.READY
+
+        fun startWithoutConsent(ctx: Context) {
+            ctx.startForegroundService(Intent(ctx, ScreenCaptureService::class.java).setAction(ACTION_START))
+        }
+
+        /** Desktop mode is streaming, so the phone's own screen can be dimmed or turned off. */
+        fun phoneScreenControls(): Boolean = instance?.let { it.isRunning && it.desktop != null } == true
+        fun phoneScreenOff(): Boolean = instance?.phoneScreenOff == true
+        fun phoneBlackout(): Boolean = RemoteAccessibilityService.isBlackout()
+
+        fun setPhoneScreenOff(off: Boolean) { instance?.applyPhoneScreenOff(off) }
+        fun setPhoneBlackout(on: Boolean) { instance?.applyPhoneBlackout(on) }
     }
 
     private fun answer(id: String, allow: Boolean) {
@@ -171,6 +196,7 @@ class ScreenCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                val forcePhone = intent.getBooleanExtra(EXTRA_FORCE_PHONE, false)
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
                 val data: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
@@ -179,7 +205,11 @@ class ScreenCaptureService : Service() {
                     intent.getParcelableExtra(EXTRA_RESULT_DATA)
                 }
                 if (data != null && resultCode == Activity.RESULT_OK) {
-                    startCapture(resultCode, data)
+                    startCapture(resultCode, data, forcePhone)
+                } else if (!forcePhone && canStartWithoutConsent(this)) {
+                    startCapture(Activity.RESULT_CANCELED, null, false)
+                } else if (!isRunning && !isStarting) {
+                    stopSelf()
                 }
             }
             ACTION_STOP -> {
@@ -196,31 +226,48 @@ class ScreenCaptureService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startCapture(resultCode: Int, data: Intent) {
+    /** [data] is null for desktop mode without consent (see [canStartWithoutConsent]). */
+    private fun startCapture(resultCode: Int, data: Intent?, forcePhone: Boolean) {
         if (isRunning || isStarting) return
         isStarting = true
+        shizukuAudio = false
         runningChanged()
 
-        // Create notification channel and start foreground
+        // Create notification channel and start foreground. Without a projection the service
+        // may not claim the mediaProjection type (Android 14+ checks it), so it is a special use.
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
-
-        // Get MediaProjection (phone screen, and the audio capture in both modes)
-        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = projectionManager.getMediaProjection(resultCode, data)
-
-        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
-                stopCapture()
-            }
-        }, null)
-
-        // Setup audio capture (Android 10+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            audioAvailable = setupAudioCapture()
+        if (data == null && Build.VERSION.SDK_INT >= 34) {
+            startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
         }
 
-        if (!Prefs.desktop(this)) {
+        if (data != null) {
+            // MediaProjection: the phone screen, and the audio unless Shizuku provides it
+            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
+
+            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    stopCapture()
+                }
+            }, null)
+
+            // Setup audio capture (Android 10+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                audioAvailable = setupAudioCapture()
+            }
+        }
+
+        if (!Prefs.desktop(this) || forcePhone) {
+            if (mediaProjection == null) {  // nothing to mirror without the consent
+                stopCapture()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
             startPhoneVideo()
             finishStart()
             return
@@ -235,6 +282,30 @@ class ScreenCaptureService : Service() {
             }
             if (bound && startDesktopVideo(session)) {
                 desktop = session
+                if (mediaProjection == null) {
+                    // Audio from Shizuku's remote submix, checked once so clients see the real state
+                    val error = session.startAudio()
+                    if (error == null) session.stopAudio() else Log.w(TAG, "Shizuku audio unavailable: $error")
+                    shizukuAudio = error == null
+                    audioAvailable = shizukuAudio
+                }
+                RemoteAccessibilityService.onBlackoutChanged = { phoneScreenChanged() }
+            } else if (mediaProjection == null) {
+                // No consent was asked, so there is nothing to fall back to here: ask for it now
+                val reason = session.lastError ?: "unknown error"
+                Log.w(TAG, "Desktop mode unavailable: $reason")
+                Toast.makeText(this, "Desktop mode unavailable ($reason). Mirroring the phone screen instead.", Toast.LENGTH_LONG).show()
+                session.release()
+                stopCapture()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                try {
+                    startActivity(Intent(this, MirrorStartActivity::class.java)
+                        .putExtra(EXTRA_FORCE_PHONE, true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (t: Throwable) {
+                    Log.w(TAG, "could not ask for screen capture", t)
+                }
+                return@bind
             } else {
                 val reason = session.lastError ?: "unknown error"
                 Log.w(TAG, "Desktop mode unavailable: $reason")
@@ -296,7 +367,7 @@ class ScreenCaptureService : Service() {
             audioAvailable = audioAvailable,
             onControlCommand = { cmd ->
                 // Desktop mode injects on its own display; what it doesn't handle goes to accessibility
-                if (desktop?.handle(cmd) != true) RemoteAccessibilityService.handleCommand(cmd)
+                if (!handlePhoneScreen(cmd) && desktop?.handle(cmd) != true) RemoteAccessibilityService.handleCommand(cmd)
             },
             onClientsChanged = { mainHandler.post(publishClients) },
             onApprovalRequest = { id, label -> requestApproval(id, label) },
@@ -505,6 +576,7 @@ class ScreenCaptureService : Service() {
 
     fun setAudioEnabled(enabled: Boolean) {
         if (!audioAvailable) return
+        if (shizukuAudio) { setShizukuAudio(enabled); return }
 
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
@@ -525,6 +597,103 @@ class ScreenCaptureService : Service() {
             }
             Log.i(TAG, "Audio streaming disabled — phone speakers restored")
         }
+    }
+
+    // Desktop mode without MediaProjection: Shizuku's process records the remote submix, which
+    // takes the audio away from the phone speaker by itself, so the volume is left alone.
+    @Volatile private var shizukuAudio = false
+
+    private fun setShizukuAudio(enabled: Boolean) {
+        val session = desktop ?: return
+        if (enabled && !audioEnabled) {
+            audioEnabled = true
+            audioThread = Thread({
+                val error = session.startAudio()
+                if (error != null) {
+                    Log.e(TAG, "Shizuku audio failed: $error")
+                    audioEnabled = false
+                    return@Thread
+                }
+                Log.i(TAG, "Audio streaming enabled (Shizuku)")
+                while (audioEnabled && isRunning) {
+                    val bytes = session.readAudio(16384)
+                    if (bytes.isEmpty()) { try { Thread.sleep(20) } catch (_: InterruptedException) { break }; continue }
+                    sendFrame(FRAME_AUDIO_DATA, (System.nanoTime() / 1_000_000).toInt(), bytes)
+                }
+            }, "AudioThread").apply { start() }
+        } else if (!enabled && audioEnabled) {
+            audioEnabled = false
+            Thread { session.stopAudio() }.start()
+            Log.i(TAG, "Audio streaming disabled (Shizuku)")
+        }
+    }
+
+    // ---- The phone's own screen while desktop mode streams ----
+
+    @Volatile private var phoneScreenOff = false
+    private var screenLock: PowerManager.WakeLock? = null
+    private var screenOffReceiver: BroadcastReceiver? = null
+
+    /** {"type":"phone_screen","off":true} and {"type":"phone_blackout","on":true} from clients. */
+    private fun handlePhoneScreen(json: String): Boolean {
+        if (!json.contains("\"phone_")) return false
+        val cmd = try { org.json.JSONObject(json) } catch (_: Exception) { return false }
+        when (cmd.optString("type")) {
+            "phone_screen" -> applyPhoneScreenOff(cmd.optBoolean("off"))
+            "phone_blackout" -> applyPhoneBlackout(cmd.optBoolean("on"))
+            else -> return false
+        }
+        return true
+    }
+
+    private fun applyPhoneScreenOff(off: Boolean) {
+        val session = desktop ?: return
+        Thread {
+            val error = session.setScreenPower(!off)
+            mainHandler.post {
+                if (error != null) {
+                    Log.w(TAG, "phone screen power failed: $error")
+                    Toast.makeText(this, "Could not turn the phone screen " + (if (off) "off" else "on") + ". Try the black screen instead.", Toast.LENGTH_LONG).show()
+                } else {
+                    setPhoneScreenOffState(off)
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * While the panel is off the phone must stay awake, or the screen timeout would put it (and
+     * the desktop) to sleep. The power button still sleeps it; then the panel is back on by itself.
+     */
+    private fun setPhoneScreenOffState(off: Boolean) {
+        phoneScreenOff = off
+        screenLock?.let { if (it.isHeld) it.release() }
+        screenLock = null
+        screenOffReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
+        screenOffReceiver = null
+        if (off) {
+            @Suppress("DEPRECATION")
+            screenLock = getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.FULL_WAKE_LOCK, "RemotePhone:PhoneScreenOff").apply { acquire() }
+            screenOffReceiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) { setPhoneScreenOffState(false) }
+            }.also { registerReceiver(it, IntentFilter(Intent.ACTION_SCREEN_OFF)) }
+        }
+        phoneScreenChanged()
+    }
+
+    private fun applyPhoneBlackout(on: Boolean) {
+        if (desktop == null && on) return
+        if (!RemoteAccessibilityService.setBlackout(on)) {
+            Toast.makeText(this, "The black screen needs RemotePhone's accessibility service", Toast.LENGTH_LONG).show()
+            return
+        }
+        mainHandler.postDelayed({ phoneScreenChanged() }, 100)  // after the overlay was added/removed
+    }
+
+    private fun phoneScreenChanged() {
+        webSocketServer?.refreshInfo()
+        runningChanged()
     }
 
     private fun readAudioCapture() {
@@ -565,6 +734,12 @@ class ScreenCaptureService : Service() {
 
         updateWebClient(false)
         watchNetworks(false)
+
+        // Give the phone its screen back (the shell side powers the panel on when the display goes)
+        if (phoneScreenOff) setPhoneScreenOffState(false)
+        RemoteAccessibilityService.setBlackout(false)
+        RemoteAccessibilityService.onBlackoutChanged = null
+        shizukuAudio = false
 
         // Remove the desktop display (and its shell process) before its surface goes away
         desktop?.release()

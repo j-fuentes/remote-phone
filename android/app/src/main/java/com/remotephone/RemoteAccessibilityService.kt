@@ -3,6 +3,16 @@ package com.remotephone
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Context
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.TextView
+import android.os.Handler
+import android.os.Looper
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
@@ -26,6 +36,18 @@ class RemoteAccessibilityService : AccessibilityService() {
             private set
 
         fun isRunning(): Boolean = instance != null
+
+        /** Black overlay on the phone's own screen (desktop mode); false when the service is off. */
+        fun setBlackout(on: Boolean): Boolean {
+            val service = instance ?: return false
+            service.mainHandler.post { if (on) service.showBlackout() else service.hideBlackout() }
+            return true
+        }
+
+        fun isBlackout(): Boolean = instance?.blackout != null
+
+        /** Main thread; called when the overlay goes away by itself (swiped up, service stopped). */
+        @Volatile var onBlackoutChanged: (() -> Unit)? = null
 
         fun handleCommand(json: String) {
             val service = instance ?: run {
@@ -117,6 +139,7 @@ class RemoteAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        hideBlackout()
         instance = null
         Log.i(TAG, "Accessibility service destroyed")
         super.onDestroy()
@@ -173,6 +196,66 @@ class RemoteAccessibilityService : AccessibilityService() {
         }
         performContextMenuAction(if (cut) android.R.id.cut else android.R.id.copy)
     } != null
+
+    // ---- Black overlay ----
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var blackout: View? = null
+
+    /**
+     * Covers the phone screen in black at minimum brightness while the desktop display keeps
+     * running; an accessibility overlay needs no extra permission and also covers the lock screen.
+     * Swiping up anywhere removes it.
+     */
+    private fun showBlackout() {
+        if (blackout != null) return
+        val density = resources.displayMetrics.density
+        val hint = TextView(this).apply {
+            text = "⌃\nSwipe up to show the screen"
+            setTextColor(Color.rgb(70, 70, 70))
+            textSize = 13f
+            gravity = Gravity.CENTER
+        }
+        val view = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            addView(hint, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = (48 * density).toInt() })
+        }
+        var downY = 0f
+        view.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> downY = ev.rawY
+                MotionEvent.ACTION_UP -> if (downY - ev.rawY > 120 * density) { hideBlackout(); onBlackoutChanged?.invoke() }
+            }
+            true
+        }
+        @Suppress("DEPRECATION")
+        view.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LOW_PROFILE
+        @Suppress("DEPRECATION")
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_FULLSCREEN,
+            PixelFormat.OPAQUE
+        ).apply {
+            screenBrightness = 0f  // as dark as the panel goes
+            if (Build.VERSION.SDK_INT >= 28) layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        try {
+            getSystemService(WindowManager::class.java).addView(view, params)
+            blackout = view
+        } catch (t: Throwable) {
+            Log.e(TAG, "blackout overlay failed", t)
+        }
+    }
+
+    private fun hideBlackout() {
+        val view = blackout ?: return
+        blackout = null
+        try { getSystemService(WindowManager::class.java).removeView(view) } catch (_: Throwable) {}
+    }
 
     // ---- Screen wake ----
 

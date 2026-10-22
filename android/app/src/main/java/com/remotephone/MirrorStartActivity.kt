@@ -15,6 +15,8 @@ import androidx.activity.result.contract.ActivityResultContracts
  */
 class MirrorStartActivity : ComponentActivity() {
 
+    private val forcePhone by lazy { intent.getBooleanExtra(ScreenCaptureService.EXTRA_FORCE_PHONE, false) }
+
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -24,6 +26,7 @@ class MirrorStartActivity : ComponentActivity() {
                 action = ScreenCaptureService.ACTION_START
                 putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
+                putExtra(ScreenCaptureService.EXTRA_FORCE_PHONE, forcePhone)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
         } else {
@@ -39,6 +42,12 @@ class MirrorStartActivity : ComponentActivity() {
         if (ScreenCaptureService.isActive()) { finish(); return }
         // Recreated after rotation: the consent dialog is already up
         if (savedInstanceState != null) return
+        // Desktop mode through Shizuku needs no consent; desktop mode that failed asks for it
+        if (!forcePhone && ScreenCaptureService.canStartWithoutConsent(this)) {
+            ScreenCaptureService.startWithoutConsent(this)
+            finish()
+            return
+        }
         val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
     }

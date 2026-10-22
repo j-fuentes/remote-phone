@@ -318,6 +318,10 @@ class MirrorWebSocketServer(
         put("androidVersion", Build.VERSION.RELEASE)
         // Clients switch to real mouse/keyboard input on a desktop display
         put("desktop", desktop)
+        // Desktop mode: the phone's own screen can be powered off or covered in black meanwhile
+        put("phoneScreenControl", desktop)
+        put("phoneScreenOff", ScreenCaptureService.phoneScreenOff())
+        put("phoneBlackout", ScreenCaptureService.phoneBlackout())
     }.toString()
 
     /** Re-sends the device info, e.g. after the phone was renamed. */

@@ -254,6 +254,62 @@
                 android:visibility="gone" />
         </LinearLayout>
 
+        <!-- Phone Screen Card (desktop mode streaming only) -->
+        <LinearLayout
+            android:id="@+id/phoneScreenCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/card_background"
+            android:padding="16dp"
+            android:layout_marginTop="16dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Phone screen"
+                android:textSize="14sp"
+                android:textColor="@color/text_secondary" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="The desktop keeps running on the computer. Turn it back on from the computer, or press the power button twice. On the black screen, swipe up."
+                android:textSize="11sp"
+                android:textColor="@color/text_hint"
+                android:layout_marginTop="2dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="4dp">
+
+                <Button
+                    android:id="@+id/screenOffButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:text="Turn screen off"
+                    android:textSize="12sp"
+                    android:textColor="@color/accent_blue"
+                    android:background="@android:color/transparent"
+                    android:paddingStart="0dp"
+                    android:paddingEnd="16dp" />
+
+                <Button
+                    android:id="@+id/blackoutButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:text="Black screen"
+                    android:textSize="12sp"
+                    android:textColor="@color/accent_blue"
+                    android:background="@android:color/transparent"
+                    android:paddingStart="0dp"
+                    android:paddingEnd="0dp" />
+            </LinearLayout>
+        </LinearLayout>
+
         <!-- Start/Stop Button -->
         <Button
             android:id="@+id/startButton"

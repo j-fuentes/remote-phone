@@ -6,7 +6,11 @@ import android.content.ContextWrapper
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.hardware.input.InputManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Binder
+import android.os.IBinder
 import android.os.Build
 import android.os.Parcel
 import android.os.Process
@@ -30,6 +34,10 @@ import java.lang.reflect.Method
  * home does. The app hands over its encoder's input Surface, so the display renders straight
  * into the H.264 encoder, and forwards mouse/keyboard input, which is injected on that display.
  * Same approach as scrcpy's --new-display.
+ *
+ * It also captures the device's audio output (REMOTE_SUBMIX, allowed for shell) so desktop mode
+ * needs no MediaProjection consent at all, and can power the phone's own panel off while the
+ * desktop display keeps running (scrcpy's --turn-screen-off).
  */
 @Keep
 class DesktopUserService() : Binder() {
@@ -55,6 +63,8 @@ class DesktopUserService() : Binder() {
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
         if (code == DesktopProtocol.DESTROY) {
             release()
+            stopAudio()
+            if (screenOff) try { setScreenPower(true) } catch (_: Throwable) {}
             System.exit(0)
             return true
         }
@@ -80,6 +90,8 @@ class DesktopUserService() : Binder() {
             }
             DesktopProtocol.RELEASE_DISPLAY -> {
                 release()
+                stopAudio()
+                if (screenOff) try { setScreenPower(true) } catch (t: Throwable) { Log.w(TAG, "screen restore failed", t) }
                 reply?.writeNoException()
             }
             DesktopProtocol.MOUSE -> safely {
@@ -100,9 +112,141 @@ class DesktopUserService() : Binder() {
                 reply?.writeNoException()
                 reply?.writeInt(if (ok) 1 else 0)
             }
+            DesktopProtocol.AUDIO_START -> {
+                val error = try { startAudio(); null } catch (t: Throwable) { Log.e(TAG, "audio capture failed", t); stopAudio(); t.toString() }
+                reply?.writeNoException()
+                reply?.writeString(error)
+            }
+            DesktopProtocol.AUDIO_READ -> {
+                val max = data.readInt().coerceIn(1024, 65536)
+                val record = audio
+                val bytes = if (record == null) ByteArray(0) else {
+                    val buf = ByteArray(max)
+                    val n = try { record.read(buf, 0, max) } catch (t: Throwable) { -1 }
+                    if (n > 0) buf.copyOf(n) else ByteArray(0)
+                }
+                reply?.writeNoException()
+                reply?.writeByteArray(bytes)
+            }
+            DesktopProtocol.AUDIO_STOP -> {
+                stopAudio()
+                reply?.writeNoException()
+            }
+            DesktopProtocol.SCREEN_POWER -> {
+                val on = data.readInt() != 0
+                val error = try { setScreenPower(on); null } catch (t: Throwable) { Log.e(TAG, "screen power failed", t); t.toString() }
+                reply?.writeNoException()
+                reply?.writeString(error)
+            }
             else -> return super.onTransact(code, data, reply, flags)
         }
         return true
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Audio: the whole device output through the remote submix, as scrcpy's default audio source
+    // ------------------------------------------------------------------------------------------
+
+    @Volatile private var audio: AudioRecord? = null
+
+    @Synchronized
+    private fun startAudio() {
+        if (audio != null) return
+        if (Build.VERSION.SDK_INT < 31) throw UnsupportedOperationException("Shizuku audio needs Android 12+")
+        val format = AudioFormat.Builder()
+            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setSampleRate(44100)
+            .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+            .build()
+        val size = AudioRecord.getMinBufferSize(44100, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+            .coerceAtLeast(16384) * 4
+        // The record must be attributed to the shell package this process runs as
+        val record = AudioRecord.Builder()
+            .setContext(ShellContext(baseContext ?: systemContext()))
+            .setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
+            .setAudioFormat(format)
+            .setBufferSizeInBytes(size)
+            .build()
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            record.release()
+            throw IllegalStateException("AudioRecord not initialized")
+        }
+        record.startRecording()
+        audio = record
+        Log.i(TAG, "Audio capture started (remote submix)")
+    }
+
+    @Synchronized
+    private fun stopAudio() {
+        val record = audio ?: return
+        audio = null
+        try { record.stop() } catch (_: Throwable) {}
+        record.release()
+        Log.i(TAG, "Audio capture stopped")
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Phone panel power: off while the desktop display keeps running (scrcpy --turn-screen-off)
+    // ------------------------------------------------------------------------------------------
+
+    @Volatile private var screenOff = false
+
+    private fun setScreenPower(on: Boolean) {
+        // Android 15+: a public-ish entry point in the display manager, by display id
+        if (Build.VERSION.SDK_INT >= 35 && requestDisplayPower(0, on)) { screenOff = !on; return }
+        // Older: set the power mode of every physical display through SurfaceControl
+        val mode = if (on) POWER_MODE_NORMAL else POWER_MODE_OFF
+        val surfaceControl = Class.forName("android.view.SurfaceControl")
+        val setMode = surfaceControl.getMethod("setDisplayPowerMode", IBinder::class.java, Int::class.javaPrimitiveType)
+        val tokens = physicalDisplayTokens(surfaceControl)
+        if (tokens.isEmpty()) throw IllegalStateException("no physical display found")
+        for (token in tokens) setMode.invoke(null, token, mode)
+        screenOff = !on
+    }
+
+    private fun requestDisplayPower(displayId: Int, on: Boolean): Boolean {
+        val global = Class.forName("android.hardware.display.DisplayManagerGlobal").getMethod("getInstance").invoke(null) ?: return false
+        val targets = mutableListOf<Any>(global)
+        try {
+            val f = global.javaClass.getDeclaredField("mDm")
+            f.isAccessible = true
+            f.get(global)?.let { targets.add(it) }
+        } catch (_: Throwable) {}
+        for (target in targets) {
+            try {
+                val m = target.javaClass.getMethod("requestDisplayPower", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+                val result = m.invoke(target, displayId, on)
+                Log.i(TAG, "requestDisplayPower($displayId, $on) on ${target.javaClass.simpleName} -> $result")
+                return result != false
+            } catch (_: NoSuchMethodException) {
+            }
+        }
+        return false
+    }
+
+    private fun physicalDisplayTokens(surfaceControl: Class<*>): List<IBinder> {
+        // Android 14 moved these to com.android.server.display.DisplayControl, inside services.jar
+        val holder: Class<*> = if (Build.VERSION.SDK_INT >= 34) displayControl() else surfaceControl
+        return try {
+            val ids = holder.getMethod("getPhysicalDisplayIds").invoke(null) as LongArray
+            val getToken = holder.getMethod("getPhysicalDisplayToken", Long::class.javaPrimitiveType)
+            ids.mapNotNull { getToken.invoke(null, it) as IBinder? }
+        } catch (_: NoSuchMethodException) {
+            // Android 9 and older: a single built-in display
+            listOfNotNull(surfaceControl.getMethod("getBuiltInDisplay", Int::class.javaPrimitiveType).invoke(null, 0) as IBinder?)
+        }
+    }
+
+    private fun displayControl(): Class<*> {
+        val factory = Class.forName("com.android.internal.os.ClassLoaderFactory")
+        val create = factory.getDeclaredMethod("createClassLoader", String::class.java, String::class.java, String::class.java,
+            ClassLoader::class.java, Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType, String::class.java)
+        val loader = create.invoke(null, "/system/framework/services.jar", null, null, ClassLoader.getSystemClassLoader(), 0, true, null) as ClassLoader
+        val cls = loader.loadClass("com.android.server.display.DisplayControl")
+        val loadLibrary = Runtime::class.java.getDeclaredMethod("loadLibrary0", Class::class.java, String::class.java)
+        loadLibrary.isAccessible = true
+        loadLibrary.invoke(Runtime.getRuntime(), cls, "android_servers")
+        return cls
     }
 
     private inline fun safely(block: () -> Unit) {
@@ -268,6 +412,8 @@ class DesktopUserService() : Binder() {
     companion object {
         private const val TAG = "RemotePhoneDesktop"
         private const val SHELL_PACKAGE = "com.android.shell"
+        private const val POWER_MODE_OFF = 0
+        private const val POWER_MODE_NORMAL = 2
 
         // Hidden DisplayManager flags, same values scrcpy uses
         private const val FLAG_SUPPORTS_TOUCH = 1 shl 6

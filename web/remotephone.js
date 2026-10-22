@@ -842,6 +842,7 @@ class PhoneConnection {
         if (msg.device) document.title = msg.device + ' — RemotePhone';
         this.input.setDesktop(!!msg.desktop);
         document.body.classList.toggle('desktop', !!msg.desktop);
+        showPhoneScreen(msg);
         if (this.video.setScreenSize) this.video.setScreenSize(msg.screenWidth, msg.screenHeight);
         ui.audio.disabled = !msg.audioAvailable;
         if (!this.granted) setStatus('Connected to ' + (msg.device || 'phone') + ' — waiting for approval…');
@@ -939,6 +940,7 @@ class PhoneConnection {
 
   onDisconnected() {
     this.granted = false;
+    document.body.classList.remove('phone-screen-control');
     document.body.classList.remove('has-picture');
     this.input.setDesktop(false);
     this.video?.reset();
@@ -1044,6 +1046,25 @@ for (const b of document.querySelectorAll('footer button[data-key]')) {
   b.addEventListener('click', () => { conn.sendCommand({ type: 'key', action: b.dataset.key }); ui.stage.focus({ preventScroll: true }); });
 }
 ui.fullscreen.addEventListener('click', toggleFullscreen);
+
+// Desktop mode: power the phone's own panel off, or cover it in black, while the desktop keeps
+// running. The phone reports the real state in every info message.
+const phoneScreenButtons = { off: $('phoneScreenOff'), blackout: $('phoneBlackout') };
+function showPhoneScreen(info) {
+  document.body.classList.toggle('phone-screen-control', !!info.phoneScreenControl);
+  phoneScreenButtons.off.setAttribute('aria-pressed', String(!!info.phoneScreenOff));
+  phoneScreenButtons.blackout.setAttribute('aria-pressed', String(!!info.phoneBlackout));
+  setIconButton(phoneScreenButtons.off, 'phone-off', info.phoneScreenOff ? 'Turn the phone screen on' : 'Turn the phone screen off');
+  setIconButton(phoneScreenButtons.blackout, 'dark', info.phoneBlackout ? 'Remove the black screen' : 'Black phone screen');
+}
+phoneScreenButtons.off.addEventListener('click', () => {
+  conn.sendCommand({ type: 'phone_screen', off: phoneScreenButtons.off.getAttribute('aria-pressed') !== 'true' });
+  ui.stage.focus({ preventScroll: true });
+});
+phoneScreenButtons.blackout.addEventListener('click', () => {
+  conn.sendCommand({ type: 'phone_blackout', on: phoneScreenButtons.blackout.getAttribute('aria-pressed') !== 'true' });
+  ui.stage.focus({ preventScroll: true });
+});
 document.addEventListener('fullscreenchange', () => {
   const on = !!document.fullscreenElement;
   setIconButton(ui.fullscreen, on ? 'fullscreen-exit' : 'fullscreen', on ? 'Exit fullscreen (F11)' : 'Fullscreen (F11)');

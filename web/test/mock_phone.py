@@ -68,8 +68,12 @@ async def handler(ws, fp):
     config, frames = STREAM
     hello = json.loads(await ws.recv())
     print("<-", hello, flush=True)
-    await ws.send(json.dumps({"type": "info", "device": "Mock Pixel", "screenWidth": W, "screenHeight": H,
-                              "audioAvailable": True, "androidVersion": "16", "desktop": DESKTOP}))
+    screen = {"phoneScreenOff": False, "phoneBlackout": False}  # desktop mode: the phone's own screen
+    def info():
+        return json.dumps({"type": "info", "device": "Mock Pixel", "screenWidth": W, "screenHeight": H,
+                           "audioAvailable": True, "androidVersion": "16", "desktop": DESKTOP,
+                           "phoneScreenControl": DESKTOP, **screen})
+    await ws.send(info())
     cid = hello.get("id")
     if cid in approved:
         nonce = secrets.token_hex(32)
@@ -94,6 +98,8 @@ async def handler(ws, fp):
                 c = json.loads(m)
                 if c.get("type") == "toggle_audio": audio_on = c.get("enabled")
                 if c.get("type") == "copy": await ws.send(json.dumps({"type": "clipboard", "content": "hola desde el móvil"}))
+                if c.get("type") == "phone_screen" and DESKTOP: screen["phoneScreenOff"] = bool(c.get("off")); await ws.send(info())
+                if c.get("type") == "phone_blackout" and DESKTOP: screen["phoneBlackout"] = bool(c.get("on")); await ws.send(info())
             except Exception: pass
     rt = asyncio.create_task(reader())
     try:

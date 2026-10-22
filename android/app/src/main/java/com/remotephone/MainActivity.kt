@@ -121,6 +121,12 @@ class MainActivity : ComponentActivity() {
             showWebClient()
         }
 
+        // Phone screen while desktop mode streams
+        findViewById<View>(R.id.screenOffButton).setOnClickListener { ScreenCaptureService.setPhoneScreenOff(true) }
+        findViewById<View>(R.id.blackoutButton).setOnClickListener {
+            ScreenCaptureService.setPhoneBlackout(!ScreenCaptureService.phoneBlackout())
+        }
+
         // Accessibility settings button
         accessibilityButton.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -173,6 +179,15 @@ class MainActivity : ComponentActivity() {
         val clients = ScreenCaptureService.clients()
         if (clients != null) showStreaming(clients)
         else if (isStreaming && !ScreenCaptureService.isActive()) showStopped()
+        showPhoneScreenCard()
+    }
+
+    /** Desktop mode streaming: the phone's own screen can go dark while the desktop keeps running. */
+    private fun showPhoneScreenCard() {
+        val card = findViewById<View>(R.id.phoneScreenCard)
+        card.visibility = if (ScreenCaptureService.phoneScreenControls()) View.VISIBLE else View.GONE
+        findViewById<android.widget.Button>(R.id.blackoutButton).text =
+            if (ScreenCaptureService.phoneBlackout()) "Remove black screen" else "Black screen"
     }
 
     override fun onPause() {
@@ -302,6 +317,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestScreenCapture() {
+        // Desktop mode through Shizuku: no "share a single app or the entire screen" dialog
+        if (ScreenCaptureService.canStartWithoutConsent(this)) {
+            ScreenCaptureService.startWithoutConsent(this)
+            showStreaming(emptyList())
+            showWebClient()
+            return
+        }
         val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
     }
@@ -339,6 +361,7 @@ class MainActivity : ComponentActivity() {
         statusDot.text = "○"
         statusDot.setTextColor(getColor(R.color.text_muted))
         showWebClient()
+        findViewById<View>(R.id.phoneScreenCard).visibility = View.GONE
     }
 
     private fun updateAccessibilityStatus() {
