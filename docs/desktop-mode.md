@@ -59,3 +59,22 @@ fullscreen (F11) helps with some.
 - The phone clipboard is not sent back to the computer in desktop mode.
 - The on-screen keyboard may pop up on the desktop display when a text field gets focus.
 - Desktop size is fixed per session (no resize from the client yet).
+
+## No screen capture dialog, and the phone's own screen
+
+On Android 12+ with Shizuku ready, desktop mode does not ask for screen capture at all: the picture
+comes from the Shizuku display and the audio from Shizuku too (the device output through the remote
+submix, like scrcpy's default audio source), so the "share one app or the entire screen" dialog never
+shows. The audio then leaves the phone speaker by itself. If Shizuku fails at start, the app asks for
+screen capture and mirrors the phone screen instead.
+
+While a desktop streams, the phone's own screen can go dark, from the app (**Phone screen** card) or
+from the web client (two buttons in the bottom bar, only in desktop mode):
+
+- **Phone screen off** powers the phone's panel off while the desktop keeps running (scrcpy's
+  `--turn-screen-off`). The phone is kept awake meanwhile. Turn it back on from the web client; the
+  power button sleeps the phone (the desktop goes dark too) and pressing it again brings the panel back.
+- **Black phone screen** covers the phone screen with a black overlay at minimum brightness (through
+  the accessibility service, so it needs no other permission). Swipe up on the phone to remove it.
+
+Both are undone when mirroring stops.

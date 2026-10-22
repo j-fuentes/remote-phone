@@ -164,6 +164,43 @@ class DesktopSession(private val context: Context) {
     }
 
     // ------------------------------------------------------------------------------------------
+    // Audio and phone panel (shell side, no MediaProjection)
+    // ------------------------------------------------------------------------------------------
+
+    /** Starts capturing the device audio output; null on success, else the reason. */
+    fun startAudio(): String? = call(DesktopProtocol.AUDIO_START, {}) { it.readString() }.let { (ok, err) -> if (ok) err else lastError }
+
+    /** Blocks until audio is available; empty when capture stopped or the service went away. */
+    fun readAudio(max: Int): ByteArray = call(DesktopProtocol.AUDIO_READ, { it.writeInt(max) }) { it.createByteArray() }.second ?: ByteArray(0)
+
+    fun stopAudio() { call(DesktopProtocol.AUDIO_STOP, {}) { } }
+
+    /** Powers the phone's own panel on or off, the desktop display keeps running; null on success. */
+    fun setScreenPower(on: Boolean): String? =
+        call(DesktopProtocol.SCREEN_POWER, { it.writeInt(if (on) 1 else 0) }) { it.readString() }.let { (ok, err) -> if (ok) err else lastError }
+
+    /** A synchronous transaction: (true, result) when it went through, (false, null) with [lastError] set when not. */
+    private fun <T> call(code: Int, write: (Parcel) -> Unit, read: (Parcel) -> T?): Pair<Boolean, T?> {
+        val b = binder ?: return (false to null).also { lastError = "Desktop service not connected" }
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        return try {
+            data.writeInterfaceToken(DesktopProtocol.DESCRIPTOR)
+            write(data)
+            b.transact(code, data, reply, 0)
+            reply.readException()
+            true to read(reply)
+        } catch (t: Throwable) {
+            Log.w(TAG, "transaction $code failed", t)
+            lastError = t.toString()
+            false to null
+        } finally {
+            data.recycle()
+            reply.recycle()
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
     // Client commands
     // ------------------------------------------------------------------------------------------
 
