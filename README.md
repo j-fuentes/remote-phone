@@ -101,6 +101,16 @@ remotephone
 
 The launcher script creates a virtual environment and installs the package into it.
 
+**Option C: macOS app (no Python needed)**
+
+Download `RemotePhone-<version>-macos-arm64.dmg` from [Releases](https://github.com/dpk404/remote-phone/releases), open it, and drag RemotePhone into Applications. The app is not notarized, so macOS blocks the first launch: go to **System Settings -> Privacy & Security** and click **Open Anyway**, or clear the quarantine flag:
+
+```bash
+xattr -d com.apple.quarantine /Applications/RemotePhone.app
+```
+
+To build the app yourself: `pip install -e . pyinstaller && tools/build_mac.sh` (output in `dist/`).
+
 ### 3. Web Client (optional, nothing to install)
 
 The `web/` folder is a static browser client with the same features as the desktop client: two files, no build step, no server-side code. Host it anywhere static or open `web/index.html` directly, open `https://<phone-ip>:8765` once to accept the phone's certificate, then connect. See [web/README.md](web/README.md).
@@ -114,7 +124,7 @@ Stream a separate desktop instead of the phone screen: Samsung DeX on One UI 8+,
 ## Usage
 
 1. **On your phone:** Open RemotePhone -> tap **"Start Mirroring"** -> grant the screen capture permission
-2. **On your computer:** Run the desktop client. It auto-scans the network and connects if one phone is found
+2. **On your computer:** Run the desktop client. It auto-scans the network and connects if one phone is found. Untick **Auto-scan** in the status bar to skip the scan on later launches; the client remembers the last IP it connected to
 3. **Back on the phone:** a connection request appears as a notification and as a card on the app's main screen. Tap **Allow**. The picture shows up at once
 4. If auto-connect doesn't work, enter the phone's IP (shown in the app) and click **Connect**
 

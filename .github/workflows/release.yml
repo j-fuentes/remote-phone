@@ -42,8 +42,9 @@ jobs:
         run: ./gradlew assembleRelease
 
       - name: Rename APK
+        # Named after the app's own version, not the tag: a desktop-only release ships the unchanged APK honestly
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION=$(sed -n 's/.*versionName = "\(.*\)"/\1/p' android/app/build.gradle.kts)
           cp android/app/build/outputs/apk/release/app-release.apk RemotePhone-${VERSION}.apk
 
       - name: Upload APK artifact
@@ -72,9 +73,31 @@ jobs:
           name: linux-client
           path: RemotePhone-linux-*.tar.gz
 
+  build-mac:
+    name: Build macOS Client
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Build app and DMG
+        run: |
+          pip install -e . pyinstaller
+          tools/build_mac.sh
+
+      - name: Upload macOS client artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: mac-client
+          path: dist/RemotePhone-*.dmg
+
   create-release:
     name: Create GitHub Release
-    needs: [build-apk, bundle-client]
+    needs: [build-apk, bundle-client, build-mac]
     runs-on: ubuntu-latest
 
     steps:
@@ -90,6 +113,11 @@ jobs:
         with:
           name: linux-client
 
+      - name: Download macOS client
+        uses: actions/download-artifact@v5
+        with:
+          name: mac-client
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -98,5 +126,6 @@ jobs:
           gh release create "v${VERSION}" \
             --title "RemotePhone v${VERSION}" \
             --generate-notes \
-            RemotePhone-${VERSION}.apk \
-            RemotePhone-linux-${VERSION}.tar.gz
+            RemotePhone-*.apk \
+            RemotePhone-linux-${VERSION}.tar.gz \
+            RemotePhone-*.dmg

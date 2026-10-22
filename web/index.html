@@ -98,6 +98,12 @@
   .menu-panel p { margin:0 0 14px; color:var(--on-surface-variant); font-size:12px; line-height:16px; }
   .menu-panel .field span { background:var(--surface-high); }
   .menu-panel input { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+  /* Invalid fingerprint: error outline, label and supporting text, plus a badge on the key button */
+  .field.invalid input, .field.invalid input:focus { border-color:var(--error); }
+  .field.invalid span, .field.invalid input:focus + span { color:var(--error); }
+  #fpmsg { display:none; margin:4px 16px 0; font-size:12px; line-height:16px; color:var(--error); }
+  details.menu.invalid > summary { color:var(--error); }
+  details.menu.invalid > summary::after { content:""; position:absolute; top:7px; right:7px; width:8px; height:8px; border-radius:50%; background:var(--error); }
   @keyframes pop { from { opacity:0; transform:translateY(-4px) scale(.98); } }
 
   /* ---- Stage ---- */
@@ -186,7 +192,8 @@
       <div class="menu-panel">
         <h3>Certificate fingerprint</h3>
         <p>Optional. With the phone's SHA-256 fingerprint, computers it remembers reconnect without tapping <b>Allow</b> again.</p>
-        <label class="field"><input id="fingerprint" placeholder=" " autocomplete="off" spellcheck="false"><span>SHA-256</span></label>
+        <label class="field" id="fpField"><input id="fingerprint" placeholder=" " autocomplete="off" spellcheck="false"><span>SHA-256</span></label>
+        <div id="fpmsg" role="alert"></div>
       </div>
     </details>
     <button id="install" class="icon-btn" aria-label="Install as an app" data-tip="Install as an app" hidden><svg class="i"><use href="#i-install"/></svg></button>
