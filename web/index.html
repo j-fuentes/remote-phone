@@ -2,9 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>RemotePhone Web</title>
-<link rel="icon" href="data:,">
+<meta name="description" content="Mirror and control an Android phone from the browser: no install, no build step.">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="RemotePhone">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>
   :root { color-scheme: dark; --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --fg:#e6e8ee; --dim:#8a91a3; --acc:#4f8cff; --bad:#ff6b6b; --ok:#3ddc97; }
   * { box-sizing: border-box; }
@@ -46,6 +53,7 @@
   </details>
   <span class="grow"></span>
   <span id="status">Disconnected</span>
+  <button id="install" title="Install as an app" hidden>Install</button>
 </header>
 <main id="stage" tabindex="0">
   <canvas id="screen" width="360" height="780"></canvas>

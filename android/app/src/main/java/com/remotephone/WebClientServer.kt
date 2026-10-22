@@ -44,6 +44,13 @@ class WebClientServer(private val context: Context, private val port: Int = PORT
             "/" to ("index.html" to "text/html; charset=utf-8"),
             "/index.html" to ("index.html" to "text/html; charset=utf-8"),
             "/remotephone.js" to ("remotephone.js" to "text/javascript; charset=utf-8"),
+            // Installable app (PWA): manifest, service worker and icons
+            "/sw.js" to ("sw.js" to "text/javascript; charset=utf-8"),
+            "/manifest.webmanifest" to ("manifest.webmanifest" to "application/manifest+json"),
+            "/icon-192.png" to ("icon-192.png" to "image/png"),
+            "/icon-512.png" to ("icon-512.png" to "image/png"),
+            "/icon-maskable.png" to ("icon-maskable.png" to "image/png"),
+            "/apple-touch-icon.png" to ("apple-touch-icon.png" to "image/png"),
         )
     }
 
