@@ -230,7 +230,7 @@ class DesktopUserService() : Binder() {
         return try {
             val ids = holder.getMethod("getPhysicalDisplayIds").invoke(null) as LongArray
             val getToken = holder.getMethod("getPhysicalDisplayToken", Long::class.javaPrimitiveType)
-            ids.mapNotNull { getToken.invoke(null, it) as IBinder? }
+            ids.toList().mapNotNull { getToken.invoke(null, it) as IBinder? }
         } catch (_: NoSuchMethodException) {
             // Android 9 and older: a single built-in display
             listOfNotNull(surfaceControl.getMethod("getBuiltInDisplay", Int::class.javaPrimitiveType).invoke(null, 0) as IBinder?)
