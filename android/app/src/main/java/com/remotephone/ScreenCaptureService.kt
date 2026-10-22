@@ -91,6 +91,14 @@ class ScreenCaptureService : Service() {
 
         /** Set by the activity while visible; called on the main thread when watchers or requests change. */
         @Volatile var onClientsChanged: ((List<String>) -> Unit)? = null
+
+        /** Main thread, on every start/stop: an open main screen follows the Quick Settings tile. */
+        @Volatile var onRunningChanged: (() -> Unit)? = null
+
+        /** Mirroring, or about to (between the consent and the video being ready). */
+        fun isActive(): Boolean = instance?.let { it.isRunning || it.isStarting } == true
+
+        fun isStarting(): Boolean = instance?.isStarting == true
     }
 
     private fun answer(id: String, allow: Boolean) {
@@ -106,6 +114,16 @@ class ScreenCaptureService : Service() {
         val clients = webSocketServer?.clientAddresses() ?: emptyList()
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(clients))
         onClientsChanged?.invoke(clients)
+        runningChanged()
+    }
+
+    /** Tell the tile (and an open main screen) that mirroring started, stopped or got watchers. */
+    private fun runningChanged() {
+        mainHandler.post {
+            onRunningChanged?.invoke()
+            MirrorTileService.listening?.invoke()
+            MirrorTileService.refresh(this)
+        }
     }
 
     // Video
@@ -181,6 +199,7 @@ class ScreenCaptureService : Service() {
     private fun startCapture(resultCode: Int, data: Intent) {
         if (isRunning || isStarting) return
         isStarting = true
+        runningChanged()
 
         // Create notification channel and start foreground
         createNotificationChannel()
@@ -298,6 +317,8 @@ class ScreenCaptureService : Service() {
         // Start reading encoded video frames
         val encoder = videoEncoder!!
         videoThread = Thread({ readVideoEncoder(encoder) }, "VideoEncoderThread").apply { start() }
+
+        runningChanged()
 
         Log.i(TAG, "Screen capture started: ${screenWidth}x${screenHeight} on port $WS_PORT" + if (desktop != null) " (desktop)" else "")
     }
@@ -592,6 +613,8 @@ class ScreenCaptureService : Service() {
         audioRecord = null
         mediaProjection = null
         webSocketServer = null
+
+        runningChanged()
 
         Log.i(TAG, "Screen capture stopped")
     }

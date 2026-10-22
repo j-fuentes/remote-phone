@@ -164,13 +164,22 @@ class MainActivity : ComponentActivity() {
         ipText.text = addressesText()
         showWebClient()
         ScreenCaptureService.onClientsChanged = ::showStreaming
-        ScreenCaptureService.clients()?.let(::showStreaming)
+        ScreenCaptureService.onRunningChanged = ::syncStreaming
+        syncStreaming()
+    }
+
+    /** Started or stopped elsewhere (Quick Settings tile, notification, system): follow it. */
+    private fun syncStreaming() {
+        val clients = ScreenCaptureService.clients()
+        if (clients != null) showStreaming(clients)
+        else if (isStreaming && !ScreenCaptureService.isActive()) showStopped()
     }
 
     override fun onPause() {
         try { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) } catch (_: Exception) {}
         uiHandler.removeCallbacks(refreshAddresses)
         ScreenCaptureService.onClientsChanged = null
+        ScreenCaptureService.onRunningChanged = null
         super.onPause()
     }
 
@@ -319,7 +328,10 @@ class MainActivity : ComponentActivity() {
             action = ScreenCaptureService.ACTION_STOP
         }
         startService(intent)
+        showStopped()
+    }
 
+    private fun showStopped() {
         isStreaming = false
         showRequests(emptyList())
         startButton.text = "Start Mirroring"

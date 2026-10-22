@@ -78,3 +78,18 @@ remembered computers work without pasting anything.
 Accept the certificate warning once when opening the page. Chrome/Edge remember it per host, which
 also covers the WebSocket on 8765; Firefox remembers it per port, so the page then shows a link to
 accept `https://<phone-ip>:8765` too.
+
+## Install it as an app (PWA)
+
+The folder is also a web app manifest plus a service worker, so the browser can install it: its own
+window, its own icon, no address bar, and the shell is cached so it opens offline (`sw.js`).
+
+- **Chrome/Edge (desktop or Android):** an **Install** button appears in the header; the browser menu
+  has the same entry. Needs `https://` or `localhost` — a plain `http://` address on the LAN cannot
+  register a service worker.
+- **Safari (iOS/iPadOS and macOS):** **Share → Add to Home Screen** / **File → Add to Dock**.
+- **Firefox:** no install prompt on desktop; Firefox for Android has **Add to Home screen**.
+
+Only the shell is cached. The phone is always reached live over the WebSocket, so nothing about the
+mirroring works offline, and the certificate warning for `https://<phone-ip>:8765` still has to be
+accepted once per browser.

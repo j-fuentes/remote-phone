@@ -2,4 +2,14 @@
     <string name="app_name">RemotePhone</string>
     <string name="accessibility_description">RemotePhone uses this service to receive touch and gesture commands from your computer, enabling remote control of your phone without USB debugging.</string>
     <string name="ime_label">RemotePhone Keyboard</string>
+    <!-- Quick Settings tile -->
+    <string name="tile_label">Mirroring</string>
+    <string name="tile_off">Off</string>
+    <string name="tile_on">On</string>
+    <string name="tile_starting">Starting…</string>
+    <string name="tile_denied">Screen capture not allowed</string>
+    <plurals name="tile_watching">
+        <item quantity="one">%d watching</item>
+        <item quantity="other">%d watching</item>
+    </plurals>
 </resources>

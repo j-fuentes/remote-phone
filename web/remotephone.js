@@ -1045,3 +1045,53 @@ if (!conn.video) {
 } else if (params.get('connect') === '1' && ui.host.value) {
   ui.connect.click();
 }
+
+// ---------------------------------------------------------------------------------------------
+// Installable app (PWA): offline shell + "Install" button when the browser offers one
+// ---------------------------------------------------------------------------------------------
+
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  // Registering late keeps the first connection off the critical path
+  addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* http on the LAN, private mode… */ });
+  });
+}
+
+let installPrompt = null;
+const installButton = $('install');
+
+addEventListener('beforeinstallprompt', (e) => {
+  // Chromium: keep the prompt for the button instead of showing it now
+  e.preventDefault();
+  installPrompt = e;
+  installButton.hidden = false;
+  setHint('RemotePhone can be installed as an app, with its own window and icon.<br>Press <b>Install</b>, or use your browser menu.');
+});
+
+addEventListener('appinstalled', () => {
+  installPrompt = null;
+  installButton.hidden = true;
+  setHint('');
+});
+
+installButton.addEventListener('click', async () => {
+  if (!installPrompt) { setHint(installHintHtml()); return; }
+  installPrompt.prompt();
+  try { await installPrompt.userChoice; } catch { /* dismissed */ }
+  installPrompt = null;
+  installButton.hidden = true;
+});
+
+// Safari and Firefox never fire beforeinstallprompt, so the button explains how to add it by hand
+function installHintHtml() {
+  const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return ios
+    ? 'In Safari: <b>Share</b> → <b>Add to Home Screen</b>.'
+    : 'In the browser menu: <b>Install</b> or <b>Add to Home screen</b>. Needs https (or localhost) and a browser that supports it.';
+}
+
+if (matchMedia('(display-mode: standalone)').matches || navigator.standalone) {
+  installButton.hidden = true;
+} else {
+  installButton.hidden = false;
+}
