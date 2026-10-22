@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>RemotePhone Web</title>
 <meta name="description" content="Mirror and control an Android phone from the browser: no install, no build step.">
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#1e1f25">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="RemotePhone">
@@ -13,58 +13,202 @@
 <link rel="icon" href="icon-192.png" sizes="192x192" type="image/png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>
-  :root { color-scheme: dark; --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --fg:#e6e8ee; --dim:#8a91a3; --acc:#4f8cff; --bad:#ff6b6b; --ok:#3ddc97; }
-  * { box-sizing: border-box; }
-  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; }
-  body { display:flex; flex-direction:column; }
-  header { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); }
-  header .grow { flex:1; }
-  input { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
-  #host { width:150px; } #port { width:70px; } #fingerprint { width:260px; font-family:ui-monospace, monospace; font-size:12px; }
-  button { background:#232835; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
-  button:hover:not(:disabled) { border-color:var(--acc); }
-  button:disabled { opacity:.45; cursor:default; }
-  button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
-  label { display:flex; gap:6px; align-items:center; color:var(--dim); }
-  #status { color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:40vw; }
-  #status.err { color:var(--bad); } #status.ok { color:var(--ok); }
-  #stage { flex:1; position:relative; overflow:hidden; display:flex; align-items:center; justify-content:center; outline:none; }
-  #screen { display:block; background:#000; touch-action:none; cursor:default; box-shadow:0 0 0 1px var(--line); }
-  #hint { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; color:var(--dim); pointer-events:none; }
-  #hint a { color:var(--acc); pointer-events:auto; }
-  #hint div { max-width:560px; }
-  details { color:var(--dim); }
-  footer { display:flex; gap:6px; justify-content:center; padding:6px; background:var(--panel); border-top:1px solid var(--line); }
-  code { background:#232835; padding:1px 4px; border-radius:4px; }
+  /* Material 3 dark scheme (blue seed). No web fonts or libraries: the page must work offline */
+  :root {
+    color-scheme: dark;
+    --primary:#a8c7fa; --on-primary:#062e6f;
+    --surface:#121318; --surface-container:#1e1f25; --surface-high:#282a2f; --surface-highest:#33353a;
+    --on-surface:#e3e2e9; --on-surface-variant:#c4c6d0; --outline:#8e9099; --outline-variant:#44474f;
+    --error:#ffb4ab; --success:#7ddb9e;
+    --ease: cubic-bezier(.2,0,0,1);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--surface); color:var(--on-surface);
+    font:14px/20px Roboto, "Google Sans", system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing:.1px; }
+  body { display:flex; flex-direction:column; overflow:hidden; }
+  svg.i { width:24px; height:24px; fill:currentColor; flex:none; display:block; }
+
+  /* ---- Top app bar ---- */
+  .top-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:8px 12px;
+    padding-top:max(8px, env(safe-area-inset-top)); padding-left:max(12px, env(safe-area-inset-left)); padding-right:max(12px, env(safe-area-inset-right));
+    background:var(--surface-container); position:relative; z-index:3; }
+  .brand { display:flex; align-items:center; gap:8px; font-size:18px; font-weight:500; margin-right:4px; white-space:nowrap; }
+  .brand svg { color:var(--primary); }
+  .grow { flex:1; }
+  .group { display:flex; align-items:center; gap:4px; }
+
+  /* Outlined text field with floating label */
+  .field { position:relative; display:block; }
+  .field input { height:40px; width:100%; padding:0 12px; border-radius:4px; border:1px solid var(--outline);
+    background:transparent; color:var(--on-surface); font:inherit; font-size:15px; outline:none; transition:border-color .15s; }
+  .field input:hover:not(:disabled) { border-color:var(--on-surface); }
+  .field input:focus { border:2px solid var(--primary); padding:0 11px; }
+  .field input:disabled { opacity:.6; }
+  .field span { position:absolute; left:9px; top:10px; padding:0 4px; color:var(--on-surface-variant); pointer-events:none;
+    background:var(--surface-container); transition:all .15s var(--ease); font-size:15px; line-height:20px; }
+  .field input:focus + span, .field input:not(:placeholder-shown) + span { top:-9px; font-size:12px; line-height:16px; }
+  .field input:focus + span { color:var(--primary); }
+  #hostField { width:180px; } #portField { width:84px; }
+
+  /* Icon buttons: standard and filled, with the M3 state layer */
+  .icon-btn { position:relative; width:40px; height:40px; border-radius:20px; border:0; padding:8px; cursor:pointer;
+    background:transparent; color:var(--on-surface-variant); display:inline-flex; align-items:center; justify-content:center;
+    transition:background-color .2s, color .2s, opacity .15s; -webkit-tap-highlight-color:transparent; }
+  .icon-btn::before { content:""; position:absolute; inset:0; border-radius:inherit; background:currentColor; opacity:0; transition:opacity .15s; }
+  .icon-btn:hover:not(:disabled)::before { opacity:.08; }
+  .icon-btn:active:not(:disabled)::before { opacity:.12; }
+  .icon-btn:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+  .icon-btn:disabled { opacity:.38; cursor:default; }
+  .icon-btn.filled { background:var(--primary); color:var(--on-primary); }
+  .icon-btn.danger { background:var(--surface-highest); color:var(--error); }
+  .icon-btn[hidden] { display:none; }
+
+  /* Switch */
+  .switch { display:inline-flex; align-items:center; gap:8px; color:var(--on-surface-variant); cursor:pointer; user-select:none; }
+  .switch input { appearance:none; -webkit-appearance:none; margin:0; position:relative; width:52px; height:32px; border-radius:16px;
+    background:var(--surface-highest); border:2px solid var(--outline); cursor:pointer; transition:background-color .2s, border-color .2s; flex:none; }
+  .switch input::after { content:""; position:absolute; top:6px; left:6px; width:16px; height:16px; border-radius:50%; background:var(--outline);
+    transition:all .2s var(--ease); }
+  .switch input:checked { background:var(--primary); border-color:var(--primary); }
+  .switch input:checked::after { left:22px; top:2px; width:24px; height:24px; background:var(--on-primary); }
+  .switch input:active:not(:disabled)::after { width:28px; height:28px; top:0; left:0; }
+  .switch input:checked:active:not(:disabled)::after { left:20px; }
+  .switch input:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+  .switch input:disabled { opacity:.38; cursor:default; }
+  .switch:has(input:disabled) { cursor:default; }
+  .switch:has(input:disabled) svg { opacity:.38; }
+  .switch:has(input:checked) svg { color:var(--primary); }
+
+  /* Status chip */
+  #status { display:inline-flex; align-items:center; gap:8px; height:32px; padding:0 12px 0 10px; border-radius:8px;
+    border:1px solid var(--outline-variant); color:var(--on-surface-variant); font-size:13px; font-weight:500;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:min(42vw, 420px); }
+  #status::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--outline); flex:none; }
+  #status.ok { color:var(--on-surface); } #status.ok::before { background:var(--success); box-shadow:0 0 0 3px #7ddb9e33; }
+  #status.err { color:var(--error); } #status.err::before { background:var(--error); }
+
+  /* Menu (certificate fingerprint) */
+  details.menu { position:relative; }
+  details.menu > summary { list-style:none; }
+  details.menu > summary::-webkit-details-marker { display:none; }
+  details.menu[open] > summary { background:var(--surface-highest); color:var(--on-surface); }
+  .menu-panel { position:absolute; right:0; top:48px; width:min(360px, calc(100vw - 24px)); padding:16px; border-radius:12px;
+    background:var(--surface-high); box-shadow:0 2px 6px 2px #0000004d, 0 1px 2px #0000004d; z-index:10; animation:pop .15s var(--ease); }
+  .menu-panel h3 { margin:0 0 4px; font-size:14px; font-weight:500; }
+  .menu-panel p { margin:0 0 14px; color:var(--on-surface-variant); font-size:12px; line-height:16px; }
+  .menu-panel .field span { background:var(--surface-high); }
+  .menu-panel input { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+  @keyframes pop { from { opacity:0; transform:translateY(-4px) scale(.98); } }
+
+  /* ---- Stage ---- */
+  #stage { flex:1; position:relative; overflow:hidden; display:flex; align-items:center; justify-content:center; outline:none;
+    background:radial-gradient(ellipse at 50% 40%, #1b1d24 0%, var(--surface) 70%); }
+  #screen { display:block; background:#000; touch-action:none; cursor:default; border-radius:14px;
+    box-shadow:0 0 0 1px #ffffff14, 0 8px 24px #00000080; }
+  body.desktop #screen, body.bars-hidden #screen { border-radius:4px; }
+  /* No empty black box before the first picture */
+  body:not(.has-picture) #screen { visibility:hidden; }
+  #hint { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; pointer-events:none; }
+  #hint > div { max-width:480px; padding:24px 28px; border-radius:28px; background:var(--surface-high); color:var(--on-surface-variant);
+    box-shadow:0 1px 3px 1px #00000026, 0 1px 2px #0000004d; line-height:22px; animation:pop .2s var(--ease); }
+  #hint a { color:var(--primary); pointer-events:auto; }
+  #hint b { color:var(--on-surface); font-weight:500; }
+  code { background:var(--surface-highest); padding:1px 6px; border-radius:6px; font-size:12px; }
+
+  /* ---- Bottom navigation bar ---- */
+  .nav-bar { display:flex; align-items:center; justify-content:center; gap:4px; padding:6px 12px;
+    padding-bottom:max(6px, env(safe-area-inset-bottom)); background:var(--surface-container); z-index:3; }
+  .nav-bar .icon-btn { width:56px; height:40px; }
+  .nav-bar .sep { width:1px; height:24px; background:var(--outline-variant); margin:0 8px; }
+
+  /* ---- Hidden bars: full-bleed picture, a small floating button brings them back ---- */
+  body.bars-hidden .top-bar, body.bars-hidden .nav-bar { display:none; }
+  #showBars { position:fixed; top:max(10px, env(safe-area-inset-top)); right:max(10px, env(safe-area-inset-right)); z-index:20;
+    display:none; background:var(--surface-high); color:var(--on-surface); box-shadow:0 1px 3px 1px #00000026, 0 1px 2px #0000004d;
+    opacity:.25; transition:opacity .3s; }
+  #showBars:hover, #showBars:focus-visible, body.pointer-recent #showBars { opacity:1; }
+  body.bars-hidden #showBars { display:inline-flex; }
+
+  /* Tooltips, only where there is a hovering pointer */
+  @media (hover:hover) {
+    [data-tip]:hover::after { content:attr(data-tip); position:absolute; top:calc(100% + 6px); left:50%; transform:translateX(-50%);
+      padding:4px 8px; border-radius:4px; background:var(--on-surface); color:var(--surface); font-size:12px; line-height:16px;
+      white-space:nowrap; pointer-events:none; z-index:30; animation:pop .1s var(--ease) .5s both; }
+    .nav-bar [data-tip]:hover::after { top:auto; bottom:calc(100% + 6px); }
+    .group [data-tip]:hover::after, #showBars:hover::after { left:auto; right:0; transform:none; }
+    details.menu[open] > summary::after { display:none; }
+  }
+
+  @media (max-width: 640px) {
+    .brand span { display:none; }
+    #hostField { flex:1; width:auto; min-width:110px; }
+    .top-bar .grow { display:none; }
+    #status { flex:1 1 0; min-width:0; max-width:none; }
+    .nav-bar { gap:0; padding-left:4px; padding-right:4px; }
+    .nav-bar .icon-btn { width:44px; }
+    .nav-bar .sep { margin:0 2px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
 </style>
 </head>
 <body>
-<header>
-  <input id="host" placeholder="Phone IP (e.g. 192.168.1.42)" autocomplete="off" spellcheck="false">
-  <input id="port" value="8765" inputmode="numeric">
-  <button id="connect" class="primary">Connect</button>
-  <label title="Stream phone audio (Android 10+)"><input type="checkbox" id="audio" disabled> Audio</label>
-  <details>
-    <summary>Certificate fingerprint</summary>
-    <input id="fingerprint" placeholder="SHA-256, optional" autocomplete="off" spellcheck="false">
-  </details>
+<!-- Material Symbols (Apache 2.0), inlined so the app needs nothing from the network -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-phone" viewBox="0 0 24 24"><path d="M17 1.01 7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></symbol>
+  <symbol id="i-link-off" viewBox="0 0 24 24"><path d="M17 7h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1 0 1.43-.98 2.63-2.31 2.98l1.46 1.46C20.88 15.61 22 13.95 22 12c0-2.76-2.24-5-5-5zm-1 4h-2.19l2 2H16zM2 4.27l3.11 3.11C3.29 8.12 2 9.91 2 12c0 2.76 2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1 0-1.59 1.21-2.9 2.76-3.07L8.73 11H8v2h2.73L13 15.27V17h1.73l4.01 4L20 19.74 3.27 3 2 4.27z"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></symbol>
+  <symbol id="i-install" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></symbol>
+  <symbol id="i-hide-bars" viewBox="0 0 24 24"><path d="M21 11V3h-8l3.29 3.29-10 10L3 13v8h8l-3.29-3.29 10-10z"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></symbol>
+  <symbol id="i-recents" viewBox="0 0 24 24"><path d="M18 4H6c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H6V6h12v12z"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></symbol>
+  <symbol id="i-tune" viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/></symbol>
+  <symbol id="i-fullscreen" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></symbol>
+  <symbol id="i-fullscreen-exit" viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></symbol>
+</svg>
+
+<header class="top-bar">
+  <div class="brand"><svg class="i"><use href="#i-phone"/></svg><span>RemotePhone</span></div>
+  <label class="field" id="hostField"><input id="host" placeholder=" " autocomplete="off" spellcheck="false"><span>Phone IP</span></label>
+  <label class="field" id="portField"><input id="port" value="8765" placeholder=" " inputmode="numeric"><span>Port</span></label>
+  <button id="connect" class="icon-btn filled" aria-label="Connect" data-tip="Connect"><svg class="i"><use href="#i-link"/></svg></button>
+  <label class="switch" title="Stream phone audio (Android 10+)"><svg class="i"><use href="#i-volume"/></svg><input type="checkbox" role="switch" id="audio" aria-label="Audio" disabled></label>
   <span class="grow"></span>
   <span id="status">Disconnected</span>
-  <button id="install" title="Install as an app" hidden>Install</button>
+  <div class="group">
+    <details class="menu" id="fpMenu">
+      <summary class="icon-btn" aria-label="Certificate fingerprint" data-tip="Certificate fingerprint"><svg class="i"><use href="#i-key"/></svg></summary>
+      <div class="menu-panel">
+        <h3>Certificate fingerprint</h3>
+        <p>Optional. With the phone's SHA-256 fingerprint, computers it remembers reconnect without tapping <b>Allow</b> again.</p>
+        <label class="field"><input id="fingerprint" placeholder=" " autocomplete="off" spellcheck="false"><span>SHA-256</span></label>
+      </div>
+    </details>
+    <button id="install" class="icon-btn" aria-label="Install as an app" data-tip="Install as an app" hidden><svg class="i"><use href="#i-install"/></svg></button>
+    <button id="hideBars" class="icon-btn" aria-label="Hide bars (F9)" data-tip="Hide bars (F9)"><svg class="i"><use href="#i-hide-bars"/></svg></button>
+  </div>
 </header>
 <main id="stage" tabindex="0">
   <canvas id="screen" width="360" height="780"></canvas>
   <div id="hint"><div>Enter the IP shown in the RemotePhone app and press <b>Connect</b>.</div></div>
 </main>
-<footer>
-  <button data-key="back" title="Back (Esc / right click)">◀ Back</button>
-  <button data-key="home" title="Home">● Home</button>
-  <button data-key="recents" title="Recents (F2)">■ Recents</button>
-  <button data-key="notifications" title="Notifications (F5)">Notifications</button>
-  <button data-key="quick_settings" title="Quick settings (F6)">Quick settings</button>
-  <button data-key="power" title="Lock (F10)">Lock</button>
-  <button id="fullscreen" title="Fullscreen (F11)">⛶</button>
-</footer>
+<nav class="nav-bar">
+  <button class="icon-btn" data-key="back" aria-label="Back (Esc / right click)" data-tip="Back"><svg class="i"><use href="#i-back"/></svg></button>
+  <button class="icon-btn" data-key="home" aria-label="Home" data-tip="Home"><svg class="i"><use href="#i-home"/></svg></button>
+  <button class="icon-btn" data-key="recents" aria-label="Recents (F2)" data-tip="Recents"><svg class="i"><use href="#i-recents"/></svg></button>
+  <span class="sep"></span>
+  <button class="icon-btn" data-key="notifications" aria-label="Notifications (F5)" data-tip="Notifications"><svg class="i"><use href="#i-bell"/></svg></button>
+  <button class="icon-btn" data-key="quick_settings" aria-label="Quick settings (F6)" data-tip="Quick settings"><svg class="i"><use href="#i-tune"/></svg></button>
+  <button class="icon-btn" data-key="power" aria-label="Lock (F10)" data-tip="Lock"><svg class="i"><use href="#i-power"/></svg></button>
+  <span class="sep"></span>
+  <button class="icon-btn" id="fullscreen" aria-label="Fullscreen (F11)" data-tip="Fullscreen"><svg class="i"><use href="#i-fullscreen"/></svg></button>
+</nav>
+<button id="showBars" class="icon-btn" aria-label="Show bars (F9)" data-tip="Show bars"><svg class="i"><use href="#i-menu"/></svg></button>
 <script src="remotephone.js"></script>
 </body>
 </html>

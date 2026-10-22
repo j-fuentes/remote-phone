@@ -803,6 +803,7 @@ class PhoneConnection {
     if (type <= FRAME_VIDEO_DELTA) {
       this.video.feed(type, payload);
       if (type === FRAME_VIDEO_KEY && ui.hint.style.display !== 'none') setHint('');
+      if (type === FRAME_VIDEO_KEY) document.body.classList.add('has-picture');
     } else if (type === FRAME_AUDIO_DATA) {
       this.audio.feed(payload);
     } else if (type === FRAME_AUDIO_CONFIG) {
@@ -916,6 +917,7 @@ class PhoneConnection {
 
   onDisconnected() {
     this.granted = false;
+    document.body.classList.remove('has-picture');
     this.input.setDesktop(false);
     this.video?.reset();
     ui.audio.disabled = true;
@@ -966,10 +968,18 @@ function pickVideoPipeline() {
 
 const conn = new PhoneConnection();
 
+/** Swap the Material icon inside an icon button and keep its label/tooltip in step. */
+function setIconButton(button, icon, label) {
+  button.querySelector('use').setAttribute('href', '#i-' + icon);
+  button.setAttribute('aria-label', label);
+  button.dataset.tip = label;
+}
+
 function updateButtons() {
   const active = conn.wantConnected;
-  ui.connect.textContent = active ? 'Disconnect' : 'Connect';
-  ui.connect.classList.toggle('primary', !active);
+  setIconButton(ui.connect, active ? 'link-off' : 'link', active ? 'Disconnect' : 'Connect');
+  ui.connect.classList.toggle('filled', !active);
+  ui.connect.classList.toggle('danger', active);
   ui.host.disabled = ui.port.disabled = active;
   for (const b of document.querySelectorAll('footer button[data-key]')) b.disabled = !conn.granted;
 }
@@ -1004,6 +1014,47 @@ for (const b of document.querySelectorAll('footer button[data-key]')) {
   b.addEventListener('click', () => { conn.sendCommand({ type: 'key', action: b.dataset.key }); ui.stage.focus({ preventScroll: true }); });
 }
 ui.fullscreen.addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', () => {
+  const on = !!document.fullscreenElement;
+  setIconButton(ui.fullscreen, on ? 'fullscreen-exit' : 'fullscreen', on ? 'Exit fullscreen (F11)' : 'Fullscreen (F11)');
+});
+
+// Hide the top and bottom bars: the picture takes the whole window, a small floating button
+// (or F9) brings them back. Remembered across visits.
+const showBarsButton = $('showBars');
+function setBarsHidden(hidden) {
+  document.body.classList.toggle('bars-hidden', hidden);
+  store.set('ui/barsHidden', hidden ? '1' : '');
+  if (hidden) { $('fpMenu').open = false; nudgeShowBars(); }
+  ui.stage.focus({ preventScroll: true });
+}
+let nudgeTimer = 0;
+// The floating button stays faint over the picture; it lights up for a moment when the pointer moves
+function nudgeShowBars() {
+  document.body.classList.add('pointer-recent');
+  clearTimeout(nudgeTimer);
+  nudgeTimer = setTimeout(() => document.body.classList.remove('pointer-recent'), 2000);
+}
+$('hideBars').addEventListener('click', () => setBarsHidden(true));
+showBarsButton.addEventListener('click', () => setBarsHidden(false));
+document.addEventListener('pointermove', (e) => {
+  if (document.body.classList.contains('bars-hidden') && e.pointerType === 'mouse') nudgeShowBars();
+}, { passive: true });
+// Capture phase, so F9 also works while keys are being forwarded to the phone (desktop mode too)
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'F9' || e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (!e.repeat) setBarsHidden(!document.body.classList.contains('bars-hidden'));
+}, true);
+document.addEventListener('keyup', (e) => { if (e.key === 'F9') e.stopImmediatePropagation(); }, true);
+if (store.get('ui/barsHidden')) setBarsHidden(true);
+
+// Fingerprint menu: closes on a click elsewhere or Esc, like a Material menu
+const fpMenu = $('fpMenu');
+fpMenu.addEventListener('toggle', () => { if (fpMenu.open) setTimeout(() => ui.fingerprint.focus(), 0); });
+document.addEventListener('pointerdown', (e) => { if (fpMenu.open && !fpMenu.contains(e.target)) fpMenu.open = false; });
+ui.fingerprint.addEventListener('keydown', (e) => { if (e.key === 'Escape' || e.key === 'Enter') { fpMenu.open = false; ui.stage.focus({ preventScroll: true }); } });
 
 function typingInPageField(e) {
   const t = e.target;
@@ -1065,7 +1116,7 @@ addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   installPrompt = e;
   installButton.hidden = false;
-  setHint('RemotePhone can be installed as an app, with its own window and icon.<br>Press <b>Install</b>, or use your browser menu.');
+  if (!conn.wantConnected) setHint('RemotePhone can be installed as an app, with its own window and icon.<br>Use the <b>install</b> button at the top right, or your browser menu.');
 });
 
 addEventListener('appinstalled', () => {

@@ -32,7 +32,7 @@ Bookmarkable: `index.html?host=192.168.1.42&port=8765&connect=1` (add `&fp=<fing
 
 Controls match the desktop client: click = tap, drag = swipe, hold = long press, wheel = scroll,
 horizontal two-finger swipe / right or middle click / Esc = Back, F2 recents, F5 notifications, F6 quick settings,
-F10 lock, F11 fullscreen, typing goes to the focused field, Ctrl/Cmd + A/C/X, Ctrl/Cmd+V pastes the computer clipboard.
+F10 lock, F11 fullscreen, F9 hides or shows the top and bottom bars (also from the bar's own button; a small floating button brings them back), typing goes to the focused field, Ctrl/Cmd + A/C/X, Ctrl/Cmd+V pastes the computer clipboard.
 Touch screens work too (pointer events).
 
 ## The certificate fingerprint (optional)
