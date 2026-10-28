@@ -43,6 +43,7 @@ class SettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
+        AdaptiveLayout.centerColumn(this, 640)
 
         bind(R.id.askToggle, Prefs.ASK, Prefs.ask(this))
         bind(R.id.rememberToggle, Prefs.REMEMBER, Prefs.remember(this))

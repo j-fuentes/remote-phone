@@ -69,6 +69,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        // Tablets, foldables, landscape: two columns, the setup cards on the second
+        AdaptiveLayout.mainScreen(this, intArrayOf(
+            R.id.audioToggle, R.id.webToggle, R.id.accessibilityButton, R.id.keyboardCard, R.id.settingsButton
+        ))
 
         // Bind views
         ipText = findViewById(R.id.ipText)

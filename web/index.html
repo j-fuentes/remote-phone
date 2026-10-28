@@ -159,6 +159,102 @@
     .nav-bar .icon-btn { width:44px; }
     .nav-bar .sep { margin:0 2px; }
   }
+
+  /* ================= Responsive layout: phones, tablets, foldables =================
+     The page is a grid of three areas: top bar, stage (the phone picture) and navigation.
+     The navigation becomes a side rail wherever height is the scarce side, and on foldables the
+     picture and the controls each get one screen half, never the hinge. */
+  body { display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr) auto;
+    grid-template-areas:"top" "stage" "nav"; height:100vh; height:100dvh; }
+  .top-bar { grid-area:top; } #stage { grid-area:stage; } .nav-bar { grid-area:nav; }
+  body.bars-hidden { grid-template-rows:0 minmax(0,1fr) 0; }
+
+  /* Touch screens: 48 dp targets, as Material asks */
+  @media (pointer:coarse) {
+    .icon-btn { width:48px; height:48px; border-radius:24px; padding:12px; }
+    .nav-bar .icon-btn { width:64px; height:48px; }
+    .field input { height:48px; }
+    .field span { top:14px; }
+    .menu-panel { top:56px; }
+  }
+  @media (pointer:coarse) and (max-width:640px) { .nav-bar .icon-btn { width:44px; } }
+
+  /* From 600 px the top bar stays on one line: the status chip shrinks (ellipsis) before anything wraps */
+  @media (min-width:600px) {
+    .top-bar { flex-wrap:nowrap; }
+    #hostField { flex:0 1 200px; min-width:120px; width:auto; }
+    #status { flex:0 1 auto; min-width:32px; }
+  }
+  /* Medium windows (600-899 px: small tablets, unfolded book-style foldables): icon-only brand */
+  @media (min-width:600px) and (max-width:899px) {
+    .brand span { display:none; }
+    .top-bar { gap:8px; }
+  }
+
+  /* Expanded windows: keep the controls together instead of stretched across a wide bar */
+  @media (min-width:1200px) { #hostField { width:220px; } }
+
+  /* Landscape where height is scarce (phones on their side, foldables in landscape, tablets
+     held sideways) or touch tablets in landscape: navigation rail on the right edge, and a
+     one-line top bar, so the picture keeps as much height as possible */
+  @media (orientation:landscape) and (max-height:600px), (orientation:landscape) and (pointer:coarse) and (min-width:900px) {
+    body { grid-template-columns:minmax(0,1fr) auto; grid-template-rows:auto minmax(0,1fr);
+      grid-template-areas:"top top" "stage nav"; }
+    body.bars-hidden { grid-template-columns:minmax(0,1fr) 0; grid-template-rows:0 minmax(0,1fr); }
+    .nav-bar { flex-direction:column; justify-content:center; gap:4px; padding:8px;
+      padding-right:max(8px, env(safe-area-inset-right)); padding-bottom:max(8px, env(safe-area-inset-bottom)); overflow-y:auto; }
+    .nav-bar .icon-btn { width:56px; height:40px; flex:none; }
+    .nav-bar .sep { width:24px; height:1px; margin:6px 0; }
+    #status { max-width:min(32vw, 360px); }
+  }
+  @media (orientation:landscape) and (max-height:600px) {
+    .top-bar { flex-wrap:nowrap; padding-top:max(6px, env(safe-area-inset-top)); padding-bottom:6px; }
+    .brand span { display:none; }
+    #hostField { flex:1 1 120px; width:auto; min-width:100px; }
+    .top-bar .grow { display:none; }
+    #status { flex:1 1 0; min-width:0; }
+    #hint > div { padding:16px 20px; }
+  }
+  @media (orientation:landscape) and (max-height:600px) and (pointer:coarse) {
+    .nav-bar .icon-btn { width:56px; height:44px; }
+  }
+  @media (orientation:landscape) and (max-height:420px) {
+    /* Very short (phone landscape with the keyboard, flex-mode half screens): drop the status chip text */
+    #status { flex:0 0 auto; width:32px; padding:0; justify-content:center; font-size:0; }
+  }
+  @media (hover:hover) {
+    @media (orientation:landscape) and (max-height:600px), (orientation:landscape) and (pointer:coarse) and (min-width:900px) {
+      .nav-bar [data-tip]:hover::after { top:50%; bottom:auto; left:auto; right:calc(100% + 8px); transform:translateY(-50%); }
+    }
+  }
+
+  /* Foldable, book posture (vertical hinge, two side-by-side halves): picture on the left half,
+     controls on the right half, nothing drawn under the hinge */
+  @media (horizontal-viewport-segments: 2) {
+    body { grid-template-columns:env(viewport-segment-width 0 0) calc(env(viewport-segment-left 1 0) - env(viewport-segment-right 0 0)) minmax(0,1fr);
+      grid-template-rows:auto minmax(0,1fr); grid-template-areas:"stage hinge top" "stage hinge nav"; }
+    body.bars-hidden { grid-template-columns:minmax(0,1fr) 0 0; }
+    .top-bar { flex-wrap:wrap; }
+    .top-bar .grow { display:none; }
+    #hostField { flex:1 1 140px; width:auto; }
+    #status { flex:1 1 100%; max-width:none; order:5; }
+    #showBars { right:max(10px, env(safe-area-inset-right)); }
+  }
+  /* On both postures the controls' half becomes a panel of large buttons, easy to hit with a thumb */
+  @media (horizontal-viewport-segments: 2), (vertical-viewport-segments: 2) {
+    .nav-bar { flex-direction:row; flex-wrap:wrap; align-content:center; justify-content:center; gap:12px; padding:16px;
+      background:var(--surface); }
+    .nav-bar .icon-btn { width:88px; height:72px; border-radius:20px; background:var(--surface-container); color:var(--on-surface); }
+    .nav-bar .icon-btn svg.i { width:32px; height:32px; }
+    .nav-bar .sep { flex-basis:100%; width:auto; height:0; margin:0; background:none; }
+  }
+  /* Foldable, tabletop / flex mode (horizontal hinge): picture on the top half, controls on the bottom half */
+  @media (vertical-viewport-segments: 2) {
+    body { grid-template-columns:minmax(0,1fr);
+      grid-template-rows:env(viewport-segment-height 0 0) calc(env(viewport-segment-top 0 1) - env(viewport-segment-bottom 0 0)) auto minmax(0,1fr);
+      grid-template-areas:"stage" "hinge" "top" "nav"; }
+    body.bars-hidden { grid-template-rows:minmax(0,1fr) 0 0 0; }
+  }
   @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
 </style>
 </head>

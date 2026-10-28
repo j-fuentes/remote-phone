@@ -93,3 +93,11 @@ window, its own icon, no address bar, and the shell is cached so it opens offlin
 Only the shell is cached. The phone is always reached live over the WebSocket, so nothing about the
 mirroring works offline, and the certificate warning for `https://<phone-ip>:8765` still has to be
 accepted once per browser.
+
+## Phones, tablets and foldables
+
+The layout follows the window, not the device: the bottom bar becomes a side rail wherever height
+is scarce (phones in landscape, tablets held sideways), touch screens get 48 px targets, and on
+foldables that report their hinge (Viewport Segments API: Chrome on Android foldables) the picture
+takes one half and the other half becomes a panel of large buttons, in book and tabletop posture
+alike, with nothing drawn under the hinge.
