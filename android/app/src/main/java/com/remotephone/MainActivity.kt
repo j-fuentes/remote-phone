@@ -71,7 +71,7 @@ class MainActivity : ComponentActivity() {
         setContentView(R.layout.activity_main)
         // Tablets, foldables, landscape: two columns, the setup cards on the second
         AdaptiveLayout.mainScreen(this, intArrayOf(
-            R.id.audioToggle, R.id.webToggle, R.id.accessibilityButton, R.id.keyboardCard, R.id.settingsButton
+            R.id.audioToggle, R.id.clipboardCard, R.id.webToggle, R.id.accessibilityButton, R.id.keyboardCard, R.id.settingsButton
         ))
 
         // Bind views
@@ -103,6 +103,16 @@ class MainActivity : ComponentActivity() {
         // Audio toggle
         audioToggle.setOnCheckedChangeListener { _, isChecked ->
             ScreenCaptureService.toggleAudio(isChecked)
+        }
+
+        findViewById<Button>(R.id.shareClipboardButton).setOnClickListener {
+            val message = when {
+                !isStreaming -> "Start mirroring to share the clipboard"
+                ScreenCaptureService.clients().isNullOrEmpty() -> "No connected computer"
+                ScreenCaptureService.shareClipboard() -> "Clipboard shared with connected computer"
+                else -> "Clipboard is empty or unavailable"
+            }
+            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT).show()
         }
 
         // Audio only available on Android 10+

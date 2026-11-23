@@ -333,15 +333,41 @@ class MirrorWebSocketServer(
         broadcast(infoJson())
     }
 
-    private fun sendClipboard(conn: WebSocket) {
+    /**
+     * Explicitly share the phone's current text clipboard with every authorized client.
+     * This is deliberately opt-in from the phone UI: clipboard contents may be sensitive.
+     *
+     * @return true when non-empty text was sent to at least one connected client.
+     */
+    fun shareClipboard(): Boolean {
+        val text = clipboardText() ?: return false
+        val clients = synchronized(lock) { ready.keys.filter { it.isOpen }.toList() }
+        if (clients.isEmpty()) return false
+        val message = JSONObject().put("type", "clipboard").put("content", text).toString()
+        var sent = false
+        for (client in clients) try {
+            client.send(message)
+            sent = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Clipboard share failed", e)
+        }
+        if (sent) Log.i(TAG, "Shared clipboard with ${clients.size} client(s) (${text.length} chars)")
+        return sent
+    }
+
+    private fun clipboardText(): String? {
         // Only the active IME may read the clipboard; when that fails, use the
         // selection the accessibility service captured while performing the copy.
-        val text = try {
+        return try {
             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
         } catch (e: Exception) {
             null
         } ?: RemoteAccessibilityService.lastCopiedText
+    }
+
+    private fun sendClipboard(conn: WebSocket) {
+        val text = clipboardText()
         try {
             if (!text.isNullOrEmpty() && conn.isOpen) {
                 conn.send(JSONObject().put("type", "clipboard").put("content", text).toString())

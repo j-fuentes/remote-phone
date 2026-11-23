@@ -69,6 +69,9 @@ class ScreenCaptureService : Service() {
             instance?.setAudioEnabled(enabled)
         }
 
+        /** Shares the current text clipboard with connected, authorized clients. */
+        fun shareClipboard(): Boolean = instance?.webSocketServer?.shareClipboard() == true
+
         /** Addresses of the clients currently watching, or null when not mirroring. */
         fun clients(): List<String>? = instance?.takeIf { it.isRunning }?.webSocketServer?.clientAddresses()
 
