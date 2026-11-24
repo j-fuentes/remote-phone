@@ -6,8 +6,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ServiceInfo
+import android.os.PowerManager
 import android.content.res.Configuration
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -22,15 +26,15 @@ import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
+import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import com.remotephone.desktop.DesktopSession
 import org.java_websocket.server.DefaultSSLWebSocketServerFactory
 import java.nio.ByteBuffer
 
@@ -48,12 +52,9 @@ class ScreenCaptureService : Service() {
         const val REQUEST_CHANNEL_ID = "remote_phone_requests"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
+        /** ACTION_START: mirror the phone screen even when desktop mode is on (desktop mode failed). */
+        const val EXTRA_FORCE_PHONE = "force_phone"
         const val WS_PORT = 8765
-        const val FRAME_RATE = 60
-        private val SIZE_STEPS = floatArrayOf(1f, 2 / 3f, 0.5f)
-        /** Average milliseconds the encoder may hold frames before the stream size steps down. */
-        private const val MAX_ENCODER_DELAY_MS = 60
-        private const val DELAY_WINDOW = 90  // frames averaged per check
 
         // Frame type markers for the binary protocol
         const val FRAME_VIDEO_CONFIG: Byte = 0x00
@@ -64,24 +65,15 @@ class ScreenCaptureService : Service() {
 
         private var instance: ScreenCaptureService? = null
 
-        const val EXTRA_AUDIO = "audio"
-
         fun toggleAudio(enabled: Boolean) {
             instance?.setAudioEnabled(enabled)
         }
 
-        fun setControl(enabled: Boolean) {
-            instance?.webSocketServer?.setControl(enabled)
-        }
+        /** Shares the current text clipboard with connected, authorized clients. */
+        fun shareClipboard(): Boolean = instance?.webSocketServer?.shareClipboard() == true
 
-        fun audioEnabled(): Boolean = instance?.takeIf { it.isRunning }?.audioEnabled == true
-
-        /** The computers currently watching, or null when not mirroring. */
-        fun watchers(): List<MirrorWebSocketServer.Watcher>? = instance?.takeIf { it.isRunning }?.webSocketServer?.watchers()
-
-        fun disconnect(id: String) {
-            instance?.webSocketServer?.disconnect(id)
-        }
+        /** Addresses of the clients currently watching, or null when not mirroring. */
+        fun clients(): List<String>? = instance?.takeIf { it.isRunning }?.webSocketServer?.clientAddresses()
 
         /** Computers waiting for the owner's answer; empty when not mirroring. */
         fun pendingRequests(): List<MirrorWebSocketServer.PendingRequest> =
@@ -91,8 +83,50 @@ class ScreenCaptureService : Service() {
             instance?.answer(id, allow)
         }
 
+        /** Tells connected clients the phone's (new) name. */
+        fun refreshInfo() {
+            instance?.webSocketServer?.refreshInfo()
+        }
+
+        /** Re-reads the allowed networks (Settings changed) and listens on exactly those. */
+        fun rebind() {
+            instance?.let { s -> s.mainHandler.post { s.rebindServers() } }
+        }
+
+        /** Starts or stops the embedded web client server of a running mirroring session. */
+        fun setWebClient(enabled: Boolean) {
+            instance?.let { s -> s.mainHandler.post { s.updateWebClient(enabled) } }
+        }
+
         /** Set by the activity while visible; called on the main thread when watchers or requests change. */
-        @Volatile var onClientsChanged: ((List<MirrorWebSocketServer.Watcher>?) -> Unit)? = null
+        @Volatile var onClientsChanged: ((List<String>) -> Unit)? = null
+
+        /** Main thread, on every start/stop: an open main screen follows the Quick Settings tile. */
+        @Volatile var onRunningChanged: (() -> Unit)? = null
+
+        /** Mirroring, or about to (between the consent and the video being ready). */
+        fun isActive(): Boolean = instance?.let { it.isRunning || it.isStarting } == true
+
+        fun isStarting(): Boolean = instance?.isStarting == true
+
+        /**
+         * Desktop mode on Android 12+ with Shizuku ready: the picture comes from Shizuku's display
+         * and the audio from its remote submix, so no screen capture consent is asked at all.
+         */
+        fun canStartWithoutConsent(ctx: Context): Boolean =
+            Prefs.desktop(ctx) && Build.VERSION.SDK_INT >= 31 && DesktopSession.state() == DesktopSession.State.READY
+
+        fun startWithoutConsent(ctx: Context) {
+            ctx.startForegroundService(Intent(ctx, ScreenCaptureService::class.java).setAction(ACTION_START))
+        }
+
+        /** Desktop mode is streaming, so the phone's own screen can be dimmed or turned off. */
+        fun phoneScreenControls(): Boolean = instance?.let { it.isRunning && it.desktop != null } == true
+        fun phoneScreenOff(): Boolean = instance?.phoneScreenOff == true
+        fun phoneBlackout(): Boolean = RemoteAccessibilityService.isBlackout()
+
+        fun setPhoneScreenOff(off: Boolean) { instance?.applyPhoneScreenOff(off) }
+        fun setPhoneBlackout(on: Boolean) { instance?.applyPhoneBlackout(on) }
     }
 
     private fun answer(id: String, allow: Boolean) {
@@ -105,9 +139,19 @@ class ScreenCaptureService : Service() {
     // Runs on the main thread whenever the watchers or requests change
     private val publishClients = Runnable {
         if (!isRunning) return@Runnable
-        val watchers = webSocketServer?.watchers() ?: emptyList()
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(watchers.map { MirrorWebSocketServer.displayName(it.name).ifBlank { it.address } }))
-        onClientsChanged?.invoke(watchers)
+        val clients = webSocketServer?.clientAddresses() ?: emptyList()
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(clients))
+        onClientsChanged?.invoke(clients)
+        runningChanged()
+    }
+
+    /** Tell the tile (and an open main screen) that mirroring started, stopped or got watchers. */
+    private fun runningChanged() {
+        mainHandler.post {
+            onRunningChanged?.invoke()
+            MirrorTileService.listening?.invoke()
+            MirrorTileService.refresh(this)
+        }
     }
 
     // Video
@@ -127,19 +171,17 @@ class ScreenCaptureService : Service() {
     // Network
     private var webSocketServer: MirrorWebSocketServer? = null
 
+    // Browser client served from the phone (optional)
+    private var webClientServer: WebClientServer? = null
+
+    // Desktop mode: a Shizuku-created display (DeX / Android desktop) instead of the phone screen
+    private var desktop: DesktopSession? = null
+
     private var isRunning = false
+    private var isStarting = false  // between Start and the video source being ready
     private var screenWidth = 0
     private var screenHeight = 0
     private var density = 0
-    private var bitrate = 0  // asked for by the last client allowed; 0 until one asks
-    // The stream is encoded smaller than the screen when the encoder cannot keep up at full size
-    // (see readVideoEncoder). It only ever steps down, and starts again at full size next session.
-    private var sizeStep = 0
-    private val encWidth get() = scaled(screenWidth)
-    private val encHeight get() = scaled(screenHeight)
-    private fun scaled(pixels: Int) =
-        if (sizeStep == 0) pixels else (pixels * SIZE_STEPS[sizeStep]).toInt() and (-2)  // even, like the full size; multiples of 16 would change the shape
-    @Volatile private var lastKeyFrameRequest = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -157,6 +199,7 @@ class ScreenCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                val forcePhone = intent.getBooleanExtra(EXTRA_FORCE_PHONE, false)
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
                 val data: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
@@ -165,8 +208,11 @@ class ScreenCaptureService : Service() {
                     intent.getParcelableExtra(EXTRA_RESULT_DATA)
                 }
                 if (data != null && resultCode == Activity.RESULT_OK) {
-                    startCapture(resultCode, data)
-                    if (intent.getBooleanExtra(EXTRA_AUDIO, false)) setAudioEnabled(true)
+                    startCapture(resultCode, data, forcePhone)
+                } else if (!forcePhone && canStartWithoutConsent(this)) {
+                    startCapture(Activity.RESULT_CANCELED, null, false)
+                } else if (!isRunning && !isStarting) {
+                    stopSelf()
                 }
             }
             ACTION_STOP -> {
@@ -183,29 +229,99 @@ class ScreenCaptureService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startCapture(resultCode: Int, data: Intent) {
-        if (isRunning) return
+    /** [data] is null for desktop mode without consent (see [canStartWithoutConsent]). */
+    private fun startCapture(resultCode: Int, data: Intent?, forcePhone: Boolean) {
+        if (isRunning || isStarting) return
+        isStarting = true
+        shizukuAudio = false
+        runningChanged()
 
-        // Create notification channel and start foreground
+        // Create notification channel and start foreground. Without a projection the service
+        // may not claim the mediaProjection type (Android 14+ checks it), so it is a special use.
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        if (data == null && Build.VERSION.SDK_INT >= 34) {
+            startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
 
-        // Get MediaProjection
-        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = projectionManager.getMediaProjection(resultCode, data)
+        if (data != null) {
+            // MediaProjection: the phone screen, and the audio unless Shizuku provides it
+            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
 
-        val projection = mediaProjection
-        projection?.registerCallback(object : MediaProjection.Callback() {
-            // Also fires for stopCapture's own projection.stop(), once this session is already over
-            override fun onStop() {
-                if (!isRunning || mediaProjection !== projection) return
-                Log.i(TAG, "Projection stopped by the system")
+            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    stopCapture()
+                }
+            }, null)
+
+            // Setup audio capture (Android 10+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                audioAvailable = setupAudioCapture()
+            }
+        }
+
+        if (!Prefs.desktop(this) || forcePhone) {
+            if (mediaProjection == null) {  // nothing to mirror without the consent
                 stopCapture()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+                return
             }
-        }, null)
+            startPhoneVideo()
+            finishStart()
+            return
+        }
+        // Desktop mode: the display comes from Shizuku's shell process, which starts asynchronously.
+        // Any failure falls back to mirroring the phone screen, with the reason shown on the phone.
+        val session = DesktopSession(this)
+        session.bind(5_000) { bound ->
+            if (!isStarting) {  // stopped while binding
+                session.release()
+                return@bind
+            }
+            if (bound && startDesktopVideo(session)) {
+                desktop = session
+                if (mediaProjection == null) {
+                    // Audio from Shizuku's remote submix, checked once so clients see the real state
+                    val error = session.startAudio()
+                    if (error == null) session.stopAudio() else Log.w(TAG, "Shizuku audio unavailable: $error")
+                    shizukuAudio = error == null
+                    audioAvailable = shizukuAudio
+                }
+                RemoteAccessibilityService.onBlackoutChanged = { phoneScreenChanged() }
+            } else if (mediaProjection == null) {
+                // No consent was asked, so there is nothing to fall back to here: ask for it now
+                val reason = session.lastError ?: "unknown error"
+                Log.w(TAG, "Desktop mode unavailable: $reason")
+                Toast.makeText(this, "Desktop mode unavailable ($reason). Mirroring the phone screen instead.", Toast.LENGTH_LONG).show()
+                session.release()
+                stopCapture()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                try {
+                    startActivity(Intent(this, MirrorStartActivity::class.java)
+                        .putExtra(EXTRA_FORCE_PHONE, true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (t: Throwable) {
+                    Log.w(TAG, "could not ask for screen capture", t)
+                }
+                return@bind
+            } else {
+                val reason = session.lastError ?: "unknown error"
+                Log.w(TAG, "Desktop mode unavailable: $reason")
+                Toast.makeText(this, "Desktop mode unavailable ($reason). Mirroring the phone screen.", Toast.LENGTH_LONG).show()
+                session.release()
+                startPhoneVideo()
+            }
+            finishStart()
+        }
+    }
 
+    /** Mirror the phone's own screen through MediaProjection. */
+    private fun startPhoneVideo() {
         readScreenSize()
 
         val encoder = createEncoder()
@@ -214,13 +330,37 @@ class ScreenCaptureService : Service() {
         videoEncoder = encoder
         inputSurface = surface
 
-        virtualDisplay = createDisplay(surface)
+        // Create virtual display targeting the encoder surface
+        virtualDisplay = mediaProjection!!.createVirtualDisplay(
+            "RemotePhone",
+            screenWidth, screenHeight, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            surface,
+            null, null
+        )
+    }
 
-        // Setup audio capture (Android 10+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            audioAvailable = setupAudioCapture()
+    /** A separate desktop display at the configured size, rendered straight into the encoder. */
+    private fun startDesktopVideo(session: DesktopSession): Boolean {
+        val (width, height, dpi) = Prefs.desktopSize(this)
+        screenWidth = width and (-2)
+        screenHeight = height and (-2)
+        density = dpi
+        val encoder = try { createEncoder() } catch (e: Exception) { Log.e(TAG, "Desktop encoder failed", e); return false }
+        val surface = encoder.createInputSurface()
+        encoder.start()
+        if (!session.createDisplay(screenWidth, screenHeight, density, surface)) {
+            try { encoder.stop(); encoder.release(); surface.release() } catch (_: Exception) {}
+            return false
         }
+        videoEncoder = encoder
+        inputSurface = surface
+        Log.i(TAG, "Desktop display ${session.displayId}: ${screenWidth}x${screenHeight} @ ${density}dpi")
+        return true
+    }
 
+    /** Video source ready: open the server and start streaming. */
+    private fun finishStart() {
         // Start WebSocket server
         webSocketServer = MirrorWebSocketServer(
             port = WS_PORT,
@@ -228,26 +368,33 @@ class ScreenCaptureService : Service() {
             screenWidth = screenWidth,
             screenHeight = screenHeight,
             audioAvailable = audioAvailable,
-            onControlCommand = { RemoteAccessibilityService.handleCommand(it) },
+            onControlCommand = { cmd ->
+                // Desktop mode injects on its own display; what it doesn't handle goes to accessibility
+                if (!handlePhoneScreen(cmd) && desktop?.handle(cmd) != true) RemoteAccessibilityService.handleCommand(cmd)
+            },
             onClientsChanged = { mainHandler.post(publishClients) },
             onApprovalRequest = { id, label -> requestApproval(id, label) },
-            onKeyFrameNeeded = { requestKeyFrame() },
-            onBitrate = { setBitrate(it) }
+            desktop = desktop != null
         )
         // Everything, video included, travels inside TLS under the phone's own certificate
         webSocketServer!!.setWebSocketFactory(DefaultSSLWebSocketServerFactory(Tls.serverContext()))
         // A quick stop and start must not fail on the previous socket still closing
         webSocketServer!!.isReuseAddr = true
-        // The library leaves Nagle on, which holds the tail of a frame back until the client ACKs
-        webSocketServer!!.isTcpNoDelay = true
-        webSocketServer!!.start()
+        webSocketServer!!.start(NetworkAddresses.bindAddresses(this))
+        watchNetworks(true)
 
+        isStarting = false
         isRunning = true
+        updateWebClient(Prefs.webClient(this))
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
 
         // Start reading encoded video frames
+        val encoder = videoEncoder!!
         videoThread = Thread({ readVideoEncoder(encoder) }, "VideoEncoderThread").apply { start() }
 
-        Log.i(TAG, "Screen capture started: ${screenWidth}x${screenHeight} on port $WS_PORT")
+        runningChanged()
+
+        Log.i(TAG, "Screen capture started: ${screenWidth}x${screenHeight} on port $WS_PORT" + if (desktop != null) " (desktop)" else "")
     }
 
     /**
@@ -279,68 +426,44 @@ class ScreenCaptureService : Service() {
 
     /**
      * H.264 encoder at the current screen size, tuned for low-latency streaming.
-     * Hardware encoders reject keys they do not support with IllegalArgumentException (low
-     * latency on older Qualcomm ones, profile/level on some custom ROMs), so each attempt drops
-     * low latency, profile/level or both, keeping the other tuning; the bare format comes last.
+     * Some hardware encoders (common on LineageOS/custom ROMs) reject the profile/level or
+     * optional keys with IllegalArgumentException; those fall back to the base format.
      */
     private fun createEncoder(): MediaCodec {
-        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        for (profile in listOf(true, false)) for (lowLatency in listOf(true, false)) {
-            try {
-                encoder.configure(tunedVideoFormat(encoder, lowLatency, profile), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                return encoder
-            } catch (e: IllegalArgumentException) {
-                Log.w(TAG, "Encoder rejected the tuned format (low latency $lowLatency, profile $profile), retrying with less")
-                encoder.reset()
-            }
-        }
-        encoder.configure(baseVideoFormat(), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        return encoder
-    }
-
-    private fun tunedVideoFormat(encoder: MediaCodec, lowLatency: Boolean, profile: Boolean): MediaFormat =
-        baseVideoFormat().apply {
+        val videoFormat = baseVideoFormat().apply {
             // Reduce encoder output buffering for lower latency
-            if (lowLatency && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
-            // A 90 or 120 Hz display would feed more frames than the bitrate is budgeted for
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, FRAME_RATE.toFloat())
-            }
-            // When screen is static, only repeat frame every 100ms
+            // When screen is static, only repeat frame every 100ms instead of 33ms
             setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000) // microseconds
-            // Main profile: better compression than Baseline, no B-frames so still low latency.
-            // A profile must come with a level, and a fixed one is too low for tall screens at
-            // 60 fps, so take the highest level this encoder offers.
-            if (profile) encoder.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).profileLevels
-                .filter { it.profile == MediaCodecInfo.CodecProfileLevel.AVCProfileMain }
-                .maxOfOrNull { it.level }
-                ?.let {
-                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileMain)
-                    setInteger(MediaFormat.KEY_LEVEL, it)
-                }
+            // Main profile: better compression than Baseline, no B-frames so still low latency
+            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileMain)
+            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel41)
         }
+        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        try {
+            encoder.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Encoder config failed with optimized format, retrying with baseline", e)
+            encoder.reset()
+            encoder.configure(baseVideoFormat(), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        }
+        return encoder
+    }
 
     // Services receive the device configuration, so this fires when another app rotates the
     // screen even though MainActivity is portrait-locked. Locale, font and theme changes land
     // here too, and a 180 degree flip keeps the size, so only a real size change restarts video.
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (isRunning && readScreenSize()) restartVideo()
+        // The desktop display keeps its own size whatever the phone does
+        if (isRunning && desktop == null && readScreenSize()) restartVideo()
     }
 
-    private fun createDisplay(surface: Surface): VirtualDisplay = mediaProjection!!.createVirtualDisplay(
-        "RemotePhone",
-        encWidth, encHeight, density,
-        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-        surface,
-        null, null
-    )
-
     /**
-     * Swap in an encoder at the new screen size. Android 14 allows a single createVirtualDisplay
-     * per MediaProjection, so it resizes; Android 13 does not rescale a resized display, so it recreates.
+     * Swap in an encoder at the new screen size. The virtual display is resized, not recreated:
+     * Android 14 allows a single createVirtualDisplay per MediaProjection.
      */
     private fun restartVideo() {
         try {
@@ -354,13 +477,8 @@ class ScreenCaptureService : Service() {
             inputSurface = surface
             oldThread?.join(500)
             // Resize before attaching, so the new surface only ever sees the new projection
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                virtualDisplay?.resize(encWidth, encHeight, density)
-                virtualDisplay?.setSurface(surface)
-            } else {
-                virtualDisplay?.release()
-                virtualDisplay = createDisplay(surface)
-            }
+            virtualDisplay?.resize(screenWidth, screenHeight, density)
+            virtualDisplay?.setSurface(surface)
             try {
                 old?.stop()
                 old?.release()
@@ -369,12 +487,9 @@ class ScreenCaptureService : Service() {
                 Log.e(TAG, "Error releasing old encoder", e)
             }
             // Clients learn the new size before the first frame at that size arrives
-            webSocketServer?.updateScreenSize(encWidth, encHeight)
-            // Clients send positions on the picture they see; the phone works in screen pixels
-            RemoteAccessibilityService.inputScaleX = screenWidth.toFloat() / encWidth
-            RemoteAccessibilityService.inputScaleY = screenHeight.toFloat() / encHeight
+            webSocketServer?.updateScreenSize(screenWidth, screenHeight)
             videoThread = Thread({ readVideoEncoder(encoder) }, "VideoEncoderThread").apply { start() }
-            Log.i(TAG, "Video restarted at ${encWidth}x${encHeight} for a ${screenWidth}x${screenHeight} screen")
+            Log.i(TAG, "Video restarted at ${screenWidth}x${screenHeight} after rotation")
         } catch (e: Exception) {
             Log.e(TAG, "Video restart after rotation failed", e)
         }
@@ -382,36 +497,13 @@ class ScreenCaptureService : Service() {
 
     /** The minimal H.264 format every encoder accepts; optional low-latency keys are layered on top. */
     private fun baseVideoFormat(): MediaFormat =
-        MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, encWidth, encHeight).apply {
+        MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, screenWidth, screenHeight).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, if (bitrate > 0) bitrate else calculateBitrate(screenWidth, screenHeight))
-            setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE)
-            // A keyframe is many times the size of a normal frame and stalls the stream while it
-            // is sent, so they are rare; a client that needs one sooner asks (requestKeyFrame)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10)
+            setInteger(MediaFormat.KEY_BIT_RATE, calculateBitrate(screenWidth, screenHeight))
+            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // keyframe every 1s for faster error recovery
+            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
         }
-
-    /** Ask the encoder for a keyframe now; at most twice a second however many clients ask. */
-    private fun requestKeyFrame() {
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastKeyFrameRequest < 500) return
-        lastKeyFrameRequest = now
-        setEncoderParameter(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
-    }
-
-    /** The bitrate a client asked for, kept across rotation. With several clients the last one wins. */
-    private fun setBitrate(bitsPerSecond: Int) {
-        bitrate = bitsPerSecond.coerceIn(1_000_000, 40_000_000)
-        setEncoderParameter(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitrate)
-    }
-
-    private fun setEncoderParameter(key: String, value: Int) {
-        try {
-            videoEncoder?.setParameters(Bundle().apply { putInt(key, value) })
-        } catch (e: IllegalStateException) {
-            // Mid-rotation or stopping: the next encoder starts with a keyframe and the stored bitrate
-        }
-    }
 
     private fun calculateBitrate(width: Int, height: Int): Int {
         // Adaptive bitrate: ~8 bits per pixel for high quality over WiFi
@@ -420,9 +512,6 @@ class ScreenCaptureService : Service() {
 
     private fun readVideoEncoder(encoder: MediaCodec) {
         val bufferInfo = MediaCodec.BufferInfo()
-        var delaySum = 0L
-        var delayCount = 0
-        var slowWindows = 0
 
         // Exits when capture stops or a rotation swaps in a new encoder
         while (isRunning && videoEncoder === encoder) {
@@ -437,24 +526,6 @@ class ScreenCaptureService : Service() {
                         buffer.get(data, 0, bufferInfo.size)
 
                         val timestamp = (bufferInfo.presentationTimeUs / 1000).toInt()
-
-                        // A frame's timestamp is when it was drawn, on the same clock as nanoTime, so
-                        // the difference is how long the encoder held it. An encoder that cannot
-                        // keep up at this size queues frames (over 100 ms on older phones, where a
-                        // smaller picture brings it back near 30 ms), so two slow windows in a row
-                        // step the stream size down. Absurd values mean another clock: ignored.
-                        val delay = System.nanoTime() / 1_000_000 - bufferInfo.presentationTimeUs / 1000
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 && delay in 0..1000) {
-                            delaySum += delay
-                            if (++delayCount == DELAY_WINDOW) {
-                                slowWindows = if (delaySum / DELAY_WINDOW > MAX_ENCODER_DELAY_MS) slowWindows + 1 else 0
-                                if (slowWindows == 2 && sizeStep < SIZE_STEPS.size - 1) {
-                                    Log.i(TAG, "Encoder holds frames ${delaySum / DELAY_WINDOW} ms at ${encWidth}x${encHeight}: making the stream smaller")
-                                    mainHandler.post { if (isRunning && videoEncoder === encoder) { sizeStep++; restartVideo() } }
-                                }
-                                delaySum = 0; delayCount = 0
-                            }
-                        }
 
                         val frameType = when {
                             bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0 -> FRAME_VIDEO_CONFIG
@@ -506,11 +577,9 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    // From the phone's switch on the main thread and from a client's toggle_audio on the server's
-    @Synchronized
     fun setAudioEnabled(enabled: Boolean) {
-        if (!audioAvailable || (enabled && !isRunning)) return
-        val was = audioEnabled
+        if (!audioAvailable) return
+        if (shizukuAudio) { setShizukuAudio(enabled); return }
 
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
@@ -521,7 +590,7 @@ class ScreenCaptureService : Service() {
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
             audioRecord?.startRecording()
             audioThread = Thread({ readAudioCapture() }, "AudioThread").apply { start() }
-            Log.i(TAG, "Audio streaming enabled, phone speakers muted")
+            Log.i(TAG, "Audio streaming enabled — phone speakers muted")
         } else if (!enabled && audioEnabled) {
             audioEnabled = false
             try { audioRecord?.stop() } catch (_: Exception) {}
@@ -529,12 +598,105 @@ class ScreenCaptureService : Service() {
             if (savedMusicVolume > 0) {
                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, savedMusicVolume, 0)
             }
-            Log.i(TAG, "Audio streaming disabled, phone speakers restored")
+            Log.i(TAG, "Audio streaming disabled — phone speakers restored")
         }
-        if (audioEnabled != was) {
-            webSocketServer?.setAudio(audioEnabled)
-            mainHandler.post(publishClients)  // the phone's switch follows
+    }
+
+    // Desktop mode without MediaProjection: Shizuku's process records the remote submix, which
+    // takes the audio away from the phone speaker by itself, so the volume is left alone.
+    @Volatile private var shizukuAudio = false
+
+    private fun setShizukuAudio(enabled: Boolean) {
+        val session = desktop ?: return
+        if (enabled && !audioEnabled) {
+            audioEnabled = true
+            audioThread = Thread({
+                val error = session.startAudio()
+                if (error != null) {
+                    Log.e(TAG, "Shizuku audio failed: $error")
+                    audioEnabled = false
+                    return@Thread
+                }
+                Log.i(TAG, "Audio streaming enabled (Shizuku)")
+                while (audioEnabled && isRunning) {
+                    val bytes = session.readAudio(16384)
+                    if (bytes.isEmpty()) { try { Thread.sleep(20) } catch (_: InterruptedException) { break }; continue }
+                    sendFrame(FRAME_AUDIO_DATA, (System.nanoTime() / 1_000_000).toInt(), bytes)
+                }
+            }, "AudioThread").apply { start() }
+        } else if (!enabled && audioEnabled) {
+            audioEnabled = false
+            Thread { session.stopAudio() }.start()
+            Log.i(TAG, "Audio streaming disabled (Shizuku)")
         }
+    }
+
+    // ---- The phone's own screen while desktop mode streams ----
+
+    @Volatile private var phoneScreenOff = false
+    private var screenLock: PowerManager.WakeLock? = null
+    private var screenOffReceiver: BroadcastReceiver? = null
+
+    /** {"type":"phone_screen","off":true} and {"type":"phone_blackout","on":true} from clients. */
+    private fun handlePhoneScreen(json: String): Boolean {
+        if (!json.contains("\"phone_")) return false
+        val cmd = try { org.json.JSONObject(json) } catch (_: Exception) { return false }
+        when (cmd.optString("type")) {
+            "phone_screen" -> applyPhoneScreenOff(cmd.optBoolean("off"))
+            "phone_blackout" -> applyPhoneBlackout(cmd.optBoolean("on"))
+            else -> return false
+        }
+        return true
+    }
+
+    private fun applyPhoneScreenOff(off: Boolean) {
+        val session = desktop ?: return
+        Thread {
+            val error = session.setScreenPower(!off)
+            mainHandler.post {
+                if (error != null) {
+                    Log.w(TAG, "phone screen power failed: $error")
+                    Toast.makeText(this, "Could not turn the phone screen " + (if (off) "off" else "on") + ". Try the black screen instead.", Toast.LENGTH_LONG).show()
+                } else {
+                    setPhoneScreenOffState(off)
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * While the panel is off the phone must stay awake, or the screen timeout would put it (and
+     * the desktop) to sleep. The power button still sleeps it; then the panel is back on by itself.
+     */
+    private fun setPhoneScreenOffState(off: Boolean) {
+        phoneScreenOff = off
+        screenLock?.let { if (it.isHeld) it.release() }
+        screenLock = null
+        screenOffReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
+        screenOffReceiver = null
+        if (off) {
+            @Suppress("DEPRECATION")
+            screenLock = getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.FULL_WAKE_LOCK, "RemotePhone:PhoneScreenOff").apply { acquire() }
+            screenOffReceiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) { setPhoneScreenOffState(false) }
+            }.also { registerReceiver(it, IntentFilter(Intent.ACTION_SCREEN_OFF)) }
+        }
+        phoneScreenChanged()
+    }
+
+    private fun applyPhoneBlackout(on: Boolean) {
+        if (desktop == null && on) return
+        if (!RemoteAccessibilityService.setBlackout(on)) {
+            Toast.makeText(this, "The black screen needs RemotePhone's accessibility service", Toast.LENGTH_LONG).show()
+            return
+        }
+        mainHandler.postDelayed({ phoneScreenChanged() }, 100)  // after the overlay was added/removed
+    }
+
+    private fun phoneScreenChanged() {
+        webSocketServer?.refreshInfo()
+        runningChanged()
     }
 
     private fun readAudioCapture() {
@@ -562,9 +724,9 @@ class ScreenCaptureService : Service() {
     }
 
     private fun stopCapture() {
-        if (!isRunning) return
+        if (!isRunning && !isStarting) return
         isRunning = false
-        mainHandler.post { onClientsChanged?.invoke(null) }
+        isStarting = false
 
         // Restore phone volume if audio was streaming
         try { setAudioEnabled(false) } catch (_: Exception) {}
@@ -572,6 +734,19 @@ class ScreenCaptureService : Service() {
         // Stop threads
         videoThread?.interrupt()
         audioThread?.interrupt()
+
+        updateWebClient(false)
+        watchNetworks(false)
+
+        // Give the phone its screen back (the shell side powers the panel on when the display goes)
+        if (phoneScreenOff) setPhoneScreenOffState(false)
+        RemoteAccessibilityService.setBlackout(false)
+        RemoteAccessibilityService.onBlackoutChanged = null
+        shizukuAudio = false
+
+        // Remove the desktop display (and its shell process) before its surface goes away
+        desktop?.release()
+        desktop = null
 
         // Release video encoder
         try {
@@ -603,7 +778,6 @@ class ScreenCaptureService : Service() {
         if (server != null) {
             Thread {
                 try {
-                    server.closeAll()
                     server.stop(1000)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error stopping WebSocket server", e)
@@ -611,9 +785,6 @@ class ScreenCaptureService : Service() {
             }.start()
         }
 
-        sizeStep = 0
-        RemoteAccessibilityService.inputScaleX = 1f
-        RemoteAccessibilityService.inputScaleY = 1f
         virtualDisplay = null
         videoEncoder = null
         inputSurface = null
@@ -621,7 +792,67 @@ class ScreenCaptureService : Service() {
         mediaProjection = null
         webSocketServer = null
 
+        runningChanged()
+
         Log.i(TAG, "Screen capture stopped")
+    }
+
+    // Networks come and go (WiFi off, VPN on): listen on the allowed addresses of the moment
+    private val rebindRunnable = Runnable { rebindServers() }
+    private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) { queueRebind() }
+        override fun onLost(network: android.net.Network) { queueRebind() }
+        override fun onLinkPropertiesChanged(network: android.net.Network, lp: android.net.LinkProperties) { queueRebind() }
+    }
+
+    private fun queueRebind() {
+        mainHandler.removeCallbacks(rebindRunnable)
+        mainHandler.postDelayed(rebindRunnable, 500)
+    }
+
+    private fun watchNetworks(on: Boolean) {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+        try {
+            if (on) {
+                val request = android.net.NetworkRequest.Builder()
+                    .removeCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build()
+                cm.registerNetworkCallback(request, networkCallback)
+            } else {
+                cm.unregisterNetworkCallback(networkCallback)
+                mainHandler.removeCallbacks(rebindRunnable)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun rebindServers() {
+        if (!isRunning) return
+        val ws = webSocketServer
+        val web = webClientServer
+        Thread {
+            val addresses = NetworkAddresses.bindAddresses(this)
+            ws?.rebind(addresses)
+            web?.rebind(addresses)
+        }.start()
+    }
+
+    private fun updateWebClient(enabled: Boolean) {
+        if (enabled && isRunning && webClientServer == null) {
+            val server = WebClientServer(this)
+            // Binding opens a socket: keep it off the main thread
+            Thread {
+                try {
+                    server.start(NetworkAddresses.bindAddresses(this))
+                    webClientServer = server
+                } catch (e: Exception) {
+                    Log.e(TAG, "Web client server failed to start", e)
+                    mainHandler.post { Toast.makeText(this, "Web client could not start: ${e.message}", Toast.LENGTH_LONG).show() }
+                }
+            }.start()
+        } else if (!enabled || !isRunning) {
+            val server = webClientServer ?: return
+            webClientServer = null
+            Thread { server.stop() }.start()
+        }
     }
 
     private fun createNotificationChannel() {
@@ -684,7 +915,7 @@ class ScreenCaptureService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("RemotePhone")
+            .setContentTitle(if (desktop != null) "RemotePhone · desktop" else "RemotePhone")
             .setContentText(
                 if (clients.isEmpty()) "Mirroring, no client connected"
                 else "Mirroring to ${clients.joinToString(", ")}"

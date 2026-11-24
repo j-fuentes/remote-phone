@@ -2,50 +2,58 @@ package com.remotephone
 
 import android.app.Activity
 import android.content.Intent
-import android.content.res.ColorStateList
 import android.graphics.Typeface
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.text.Html
+import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.Switch
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
-import java.net.Inet4Address
-import java.net.NetworkInterface
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var ipText: TextView
-    private lateinit var addressText: TextView
-    private lateinit var statusDot: View
+    private lateinit var portText: TextView
+    private lateinit var statusDot: TextView
     private lateinit var statusText: TextView
-    private lateinit var heroTitle: TextView
-    private lateinit var heroBody: TextView
-    private lateinit var watchersList: LinearLayout
-    private lateinit var severalCaption: TextView
     private lateinit var startButton: Button
     private lateinit var audioToggle: Switch
     private lateinit var audioSubtext: TextView
     private lateinit var accessibilityStatus: TextView
-    private lateinit var setupCaption: TextView
+    private lateinit var accessibilityButton: Button
     private lateinit var keyboardStatus: TextView
+    private lateinit var keyboardButton: Button
     private lateinit var requestsCard: View
+    private lateinit var requestsContainer: LinearLayout
+
+    private lateinit var webToggle: Switch
+    private lateinit var webSubtext: TextView
+    private lateinit var webUrlRow: LinearLayout
+
+    // Refresh the addresses when WiFi or a VPN comes or goes, debounced
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val refreshAddresses = Runnable { ipText.text = addressesText(); showWebClient() }
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) { queueAddressRefresh() }
+        override fun onLost(network: Network) { queueAddressRefresh() }
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) { queueAddressRefresh() }
+    }
 
     private var isStreaming = false
-    private var setupDone = true
-    // The service starts asynchronously, so the first onResume after consent cannot see it yet
-    private var starting = false
-
-    // Redraws the watchers so their "time connected" keeps up while the screen is open
-    private val tick = Runnable { ScreenCaptureService.watchers()?.let(::showStreaming) }
 
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -54,8 +62,7 @@ class MainActivity : ComponentActivity() {
             startScreenCapture(result.resultCode, result.data!!)
         } else {
             statusText.text = "Permission denied"
-            statusText.setTextColor(getColor(R.color.red_text))
-            statusDot.backgroundTintList = getColorStateList(R.color.status_red)
+            statusDot.setTextColor(getColor(R.color.status_red))
         }
     }
 
@@ -64,58 +71,93 @@ class MainActivity : ComponentActivity() {
         setContentView(R.layout.activity_main)
         // Tablets, foldables, landscape: two columns, the setup cards on the second
         AdaptiveLayout.mainScreen(this, intArrayOf(
-            R.id.audioToggle, R.id.webToggle, R.id.accessibilityButton, R.id.keyboardCard, R.id.settingsButton
+            R.id.audioToggle, R.id.clipboardCard, R.id.webToggle, R.id.accessibilityButton, R.id.keyboardCard, R.id.settingsButton
         ))
 
+        // Bind views
         ipText = findViewById(R.id.ipText)
-        addressText = findViewById(R.id.addressText)
+        portText = findViewById(R.id.portText)
         statusDot = findViewById(R.id.statusDot)
         statusText = findViewById(R.id.statusText)
-        heroTitle = findViewById(R.id.heroTitle)
-        heroBody = findViewById(R.id.heroBody)
-        watchersList = findViewById(R.id.watchersList)
-        severalCaption = findViewById(R.id.severalCaption)
         startButton = findViewById(R.id.startButton)
         audioToggle = findViewById(R.id.audioToggle)
         audioSubtext = findViewById(R.id.audioSubtext)
         accessibilityStatus = findViewById(R.id.accessibilityStatus)
-        setupCaption = findViewById(R.id.setupCaption)
+        accessibilityButton = findViewById(R.id.accessibilityButton)
         requestsCard = findViewById(R.id.requestsCard)
+        requestsContainer = findViewById(R.id.requestsContainer)
 
-        findViewById<TextView>(R.id.portText).text =
-            "Port ${ScreenCaptureService.WS_PORT} \u00B7 type it on the computer, or let the desktop client find it"
+        // Show device IP
+        ipText.text = addressesText()
+        portText.text = "${ScreenCaptureService.WS_PORT}"
 
+        // Start/Stop button
         startButton.setOnClickListener {
-            if (!isStreaming) requestScreenCapture() else stopScreenCapture()
+            if (!isStreaming) {
+                requestScreenCapture()
+            } else {
+                stopScreenCapture()
+            }
         }
 
-        // On while idle means "start with audio"; while mirroring it shows the real state
+        // Audio toggle
         audioToggle.setOnCheckedChangeListener { _, isChecked ->
             ScreenCaptureService.toggleAudio(isChecked)
-            if (isStreaming) audioToggle.isChecked = ScreenCaptureService.audioEnabled()
         }
-        // Audio only available on Android 10+
-        audioToggle.isEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
-        findViewById<View>(R.id.accessibilityRow).setOnClickListener {
+        findViewById<Button>(R.id.shareClipboardButton).setOnClickListener {
+            val message = when {
+                !isStreaming -> "Start mirroring to share the clipboard"
+                ScreenCaptureService.clients().isNullOrEmpty() -> "No connected computer"
+                ScreenCaptureService.shareClipboard() -> "Clipboard shared with connected computer"
+                else -> "Clipboard is empty or unavailable"
+            }
+            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT).show()
+        }
+
+        // Audio only available on Android 10+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            audioToggle.isEnabled = true
+            audioSubtext.text = "Streams phone audio to PC"
+        } else {
+            audioToggle.isEnabled = false
+            audioSubtext.text = "Requires Android 10+"
+        }
+
+        // Web client served from the phone: the URL opens a browser client pointed at this phone
+        webToggle = findViewById(R.id.webToggle)
+        webSubtext = findViewById(R.id.webSubtext)
+        webUrlRow = findViewById(R.id.webUrlRow)
+        webToggle.isChecked = Prefs.webClient(this)
+        webToggle.setOnCheckedChangeListener { _, isChecked ->
+            Prefs.set(this, Prefs.WEB_CLIENT, isChecked)
+            ScreenCaptureService.setWebClient(isChecked)
+            showWebClient()
+        }
+
+        // Phone screen while desktop mode streams
+        findViewById<View>(R.id.screenOffButton).setOnClickListener { ScreenCaptureService.setPhoneScreenOff(true) }
+        findViewById<View>(R.id.blackoutButton).setOnClickListener {
+            ScreenCaptureService.setPhoneBlackout(!ScreenCaptureService.phoneBlackout())
+        }
+
+        // Accessibility settings button
+        accessibilityButton.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
 
-        val openSettings = View.OnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
-        findViewById<View>(R.id.settingsButton).setOnClickListener(openSettings)
-        severalCaption.setOnClickListener(openSettings)
-        severalCaption.text = Html.fromHtml(
-            "Several computers at once is on. Each one is watching the same screen. " +
-                "<b><font color=\"#A78BFA\">Change in Settings</font></b>", Html.FROM_HTML_MODE_LEGACY
-        )
+        findViewById<Button>(R.id.settingsButton).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
 
         // Android 13+ types through the accessibility service's own input
-        // connection, so the extra keyboard (and its row) is only wired on older versions
+        // connection, so the extra keyboard (and its card) is only wired on older versions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            findViewById<View>(R.id.keyboardCard).visibility = View.GONE
+            findViewById<android.view.View>(R.id.keyboardCard).visibility = android.view.View.GONE
         } else {
             keyboardStatus = findViewById(R.id.keyboardStatus)
-            findViewById<View>(R.id.keyboardCard).setOnClickListener {
+            keyboardButton = findViewById(R.id.keyboardButton)
+            keyboardButton.setOnClickListener {
                 if (isRemoteKeyboardEnabled()) {
                     (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
                 } else {
@@ -132,123 +174,170 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        updateSetupStatus()
-        RemoteAccessibilityService.onStateChanged = ::updateSetupStatus
-        val ip = getDeviceIpAddress()
-        ipText.text = ip
-        addressText.text = Html.fromHtml("$ip<font color=\"#9CA3AF\">:${ScreenCaptureService.WS_PORT}</font>", Html.FROM_HTML_MODE_LEGACY)
-        ScreenCaptureService.onClientsChanged = ::showState
-        ScreenCaptureService.watchers().let { if (it != null || !starting) showState(it) }
+        try {
+            // Without NOT_VPN removed, the request would skip VPN networks
+            val request = NetworkRequest.Builder().removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build()
+            getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, networkCallback)
+        } catch (_: Exception) {}
+        updateAccessibilityStatus()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) updateKeyboardStatus()
+        ipText.text = addressesText()
+        showWebClient()
+        ScreenCaptureService.onClientsChanged = ::showStreaming
+        ScreenCaptureService.onRunningChanged = ::syncStreaming
+        syncStreaming()
+    }
+
+    /** Started or stopped elsewhere (Quick Settings tile, notification, system): follow it. */
+    private fun syncStreaming() {
+        val clients = ScreenCaptureService.clients()
+        if (clients != null) showStreaming(clients)
+        else if (isStreaming && !ScreenCaptureService.isActive()) showStopped()
+        showPhoneScreenCard()
+    }
+
+    /** Desktop mode streaming: the phone's own screen can go dark while the desktop keeps running. */
+    private fun showPhoneScreenCard() {
+        val card = findViewById<View>(R.id.phoneScreenCard)
+        card.visibility = if (ScreenCaptureService.phoneScreenControls()) View.VISIBLE else View.GONE
+        findViewById<android.widget.Button>(R.id.blackoutButton).text =
+            if (ScreenCaptureService.phoneBlackout()) "Remove black screen" else "Black screen"
     }
 
     override fun onPause() {
-        starting = false
+        try { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) } catch (_: Exception) {}
+        uiHandler.removeCallbacks(refreshAddresses)
         ScreenCaptureService.onClientsChanged = null
-        RemoteAccessibilityService.onStateChanged = null
-        watchersList.removeCallbacks(tick)
+        ScreenCaptureService.onRunningChanged = null
         super.onPause()
     }
 
-    /** Null watchers means not mirroring. */
-    private fun showState(watchers: List<MirrorWebSocketServer.Watcher>?) {
-        watchers?.let(::showStreaming) ?: showIdle()
-    }
-
     /** Streaming state with who is watching, so a silent viewer on the network is never invisible. */
-    private fun showStreaming(watchers: List<MirrorWebSocketServer.Watcher>) {
+    private fun showStreaming(clients: List<String>) {
         isStreaming = true
-        val n = watchers.size
-        statusText.text = "Mirroring"
-        statusText.setTextColor(getColor(if (n == 0) R.color.amber_text else R.color.green_text))
-        statusDot.backgroundTintList = getColorStateList(if (n == 0) R.color.status_amber else R.color.status_green)
-        heroTitle.text = when (n) {
-            0 -> "Waiting for a computer"
-            1 -> "1 computer watching"
-            else -> "$n computers watching"
+        startButton.text = "Stop Mirroring"
+        statusDot.text = "\u25CF"
+        if (clients.isEmpty()) {
+            statusText.text = "Streaming, waiting for a client"
+            statusDot.setTextColor(getColor(R.color.status_amber))
+        } else {
+            statusText.text = "Streaming to ${clients.joinToString(", ")}"
+            statusDot.setTextColor(getColor(R.color.status_green))
         }
-        heroBody.text = "Connect from your computer with the address below."
-        heroBody.visibility = if (n == 0) View.VISIBLE else View.GONE
-
-        watchersList.removeAllViews()
-        for (w in watchers) {
-            watchersList.addView(computerRow(
-                this, watchersList, w.name, true,
-                "${w.address} \u00B7 ${elapsed(w.since)}", "Disconnect"
-            ) { ScreenCaptureService.disconnect(w.id) }.apply {
-                findViewById<TextView>(R.id.detail).typeface = Typeface.MONOSPACE
-            })
-        }
-        watchersList.visibility = if (n == 0) View.GONE else View.VISIBLE
-        severalCaption.visibility = if (n > 1) View.VISIBLE else View.GONE
-
-        startButton.text = if (n > 1) "Stop mirroring for everyone" else "Stop mirroring"
-        startButton.setBackgroundResource(R.drawable.button_stop)
-        startButton.setTextColor(getColor(R.color.red_text))
-        findViewById<View>(R.id.connectCard).visibility = if (n == 0) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.addressCard).visibility = if (n == 0) View.GONE else View.VISIBLE
-        findViewById<View>(R.id.setupCard).visibility = if (setupDone) View.GONE else View.VISIBLE
-        audioToggle.isChecked = ScreenCaptureService.audioEnabled()
-        showAudioSubtext()
-        showRequest()
-
-        watchersList.removeCallbacks(tick)
-        if (n > 0) watchersList.postDelayed(tick, 30_000)
+        showRequests(ScreenCaptureService.pendingRequests())
     }
 
-    private fun showIdle() {
-        if (isStreaming) audioToggle.isChecked = false  // audio ended with the session
-        isStreaming = false
-        statusText.text = "Not mirroring"
-        statusText.setTextColor(getColor(R.color.text_muted))
-        statusDot.backgroundTintList = getColorStateList(R.color.dot_idle)
-        heroTitle.text = "Ready when you are"
-        heroBody.text = "Start, then connect from your computer on the same Wi-Fi."
-        heroBody.visibility = View.VISIBLE
-        watchersList.visibility = View.GONE
-        severalCaption.visibility = View.GONE
-        startButton.text = "Start mirroring"
-        startButton.setBackgroundResource(R.drawable.button_primary)
-        startButton.setTextColor(0xFFFFFFFF.toInt())
-        findViewById<View>(R.id.connectCard).visibility = View.VISIBLE
-        findViewById<View>(R.id.addressCard).visibility = View.GONE
-        findViewById<View>(R.id.setupCard).visibility = View.VISIBLE
-        requestsCard.visibility = View.GONE
-        showAudioSubtext()
-    }
-
-    private fun showAudioSubtext() {
-        audioSubtext.text = when {
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> "Requires Android 10+"
-            isStreaming -> "Phone speaker is quiet while on"
-            else -> "Phone speaker goes quiet while on"
+    /** Computers waiting for an answer, with Allow and Deny, so a request never depends on the notification. */
+    private fun showRequests(requests: List<MirrorWebSocketServer.PendingRequest>) {
+        requestsCard.visibility = if (requests.isEmpty()) View.GONE else View.VISIBLE
+        requestsContainer.removeAllViews()
+        for ((id, name, address) in requests) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(TextView(this).apply {
+                text = if (name.isBlank()) address else "$name\n$address"
+                textSize = 13f
+                setTextColor(getColor(R.color.text_secondary))
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(answerButton("Allow", R.color.status_green) { ScreenCaptureService.answer(id, true) })
+            row.addView(answerButton("Deny", R.color.status_red) { ScreenCaptureService.answer(id, false) })
+            requestsContainer.addView(row)
         }
     }
 
-    private fun elapsed(since: Long): String {
-        val min = (System.currentTimeMillis() - since) / 60_000
+    private fun answerButton(label: String, color: Int, onClick: () -> Unit) =
+        Button(this, null, android.R.attr.borderlessButtonStyle).apply {
+            text = label
+            setTextColor(getColor(color))
+            setOnClickListener { onClick() }
+        }
+
+    private fun queueAddressRefresh() {
+        uiHandler.removeCallbacks(refreshAddresses)
+        uiHandler.postDelayed(refreshAddresses, 400)  // onLost fires before the network leaves the list
+    }
+
+    /** Every reachable address, local network first, labelled when there is more than one. */
+    private fun addressesText(): String {
+        val list = NetworkAddresses.allowed(this)
         return when {
-            min < 1 -> "just now"
-            min < 60 -> "$min min"
-            else -> "${min / 60} h ${min % 60} min"
+            list.isEmpty() && NetworkAddresses.list(this).isNotEmpty() -> "All networks switched off in Settings"
+            list.isEmpty() -> "Not connected to WiFi"
+            list.size == 1 && list[0].kind == NetworkAddresses.Kind.WIFI -> list[0].ip
+            else -> list.joinToString("\n") { "${it.ip}  · ${it.kind.label}" }
         }
     }
 
-    /** The oldest computer waiting for an answer, so a request never depends on the notification. */
-    private fun showRequest() {
-        val request = ScreenCaptureService.pendingRequests().firstOrNull()
-        requestsCard.visibility = if (request == null) View.GONE else View.VISIBLE
-        if (request == null) return
-        val name = MirrorWebSocketServer.displayName(request.name).ifBlank { request.address }
-        findViewById<TextView>(R.id.requestTitle).text = "$name wants to connect"
-        findViewById<TextView>(R.id.requestAddress).apply {
-            text = request.address
-            visibility = if (name == request.address) View.GONE else View.VISIBLE
+    /** One URL per address, each with its own Share button; the shared link carries host, port and fingerprint. */
+    private fun showWebClient() {
+        val on = webToggle.isChecked
+        val addresses = NetworkAddresses.allowed(this)
+        webUrlRow.removeAllViews()
+        webUrlRow.visibility = if (on && addresses.isNotEmpty()) View.VISIBLE else View.GONE
+        if (on) for (address in addresses) webUrlRow.addView(urlRow(address, addresses.size > 1))
+        webSubtext.text = when {
+            !on -> "Open this phone from any browser, nothing to install"
+            addresses.isEmpty() -> "Connect to WiFi to get an address"
+            !isStreaming -> "Available while mirroring. Accept the certificate warning once in the browser."
+            else -> "Open in a browser on the same network. Accept the certificate warning once."
         }
-        findViewById<View>(R.id.allowButton).setOnClickListener { ScreenCaptureService.answer(request.id, true) }
-        findViewById<View>(R.id.denyButton).setOnClickListener { ScreenCaptureService.answer(request.id, false) }
+    }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun urlRow(address: NetworkAddresses.Address, labelled: Boolean): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(TextView(this).apply {
+            text = "https://${address.ip}:${WebClientServer.PORT}"
+            textSize = 15f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(getColor(R.color.text_primary))
+            setTextIsSelectable(true)
+        })
+        if (labelled) texts.addView(TextView(this).apply {
+            text = when (address.kind) {
+                NetworkAddresses.Kind.VPN -> "VPN · for devices on the same VPN"
+                NetworkAddresses.Kind.MOBILE -> "Mobile data · usually not reachable"
+                else -> address.kind.label
+            }
+            textSize = 11f
+            setTextColor(getColor(R.color.text_hint))
+        })
+        row.addView(texts, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(Button(this).apply {
+            text = "Share"
+            setTextColor(getColor(R.color.text_primary))
+            setBackgroundResource(R.drawable.button_primary)
+            setPadding(dp(16), 0, dp(16), 0)
+            setOnClickListener { shareWebClient(address.ip) }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply { marginStart = dp(12) })
+        return row
+    }
+
+    private fun shareWebClient(ip: String) {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "RemotePhone")
+            putExtra(Intent.EXTRA_TEXT, WebClientServer.url(ip))
+        }
+        startActivity(Intent.createChooser(send, "Share web client link"))
     }
 
     private fun requestScreenCapture() {
+        // Desktop mode through Shizuku: no "share a single app or the entire screen" dialog
+        if (ScreenCaptureService.canStartWithoutConsent(this)) {
+            ScreenCaptureService.startWithoutConsent(this)
+            showStreaming(emptyList())
+            showWebClient()
+            return
+        }
         val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
     }
@@ -258,7 +347,6 @@ class MainActivity : ComponentActivity() {
             action = ScreenCaptureService.ACTION_START
             putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
             putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
-            putExtra(ScreenCaptureService.EXTRA_AUDIO, audioToggle.isChecked)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -267,8 +355,8 @@ class MainActivity : ComponentActivity() {
             startService(intent)
         }
 
-        starting = true
         showStreaming(emptyList())
+        showWebClient()
     }
 
     private fun stopScreenCapture() {
@@ -276,41 +364,32 @@ class MainActivity : ComponentActivity() {
             action = ScreenCaptureService.ACTION_STOP
         }
         startService(intent)
-        watchersList.removeCallbacks(tick)
-        showIdle()
+        showStopped()
     }
 
-    /** Green "On" with a check, or amber with what to do, on a setup row's tile and chip. */
-    private fun showSetupState(icon: Int, chip: Int, ok: Boolean, label: String) {
-        val soft = getColorStateList(if (ok) R.color.green_soft else R.color.amber_soft)
-        val fg = getColorStateList(if (ok) R.color.green_text else R.color.amber_text)
-        findViewById<ImageView>(icon).apply { backgroundTintList = soft; imageTintList = fg }
-        findViewById<TextView>(chip).apply {
-            backgroundTintList = soft
-            setTextColor(fg)
-            compoundDrawableTintList = fg
-            setCompoundDrawablesRelativeWithIntrinsicBounds(if (ok) R.drawable.ic_check else 0, 0, 0, 0)
-            text = label
-        }
-    }
-
-    private fun updateSetupStatus() {
-        updateAccessibilityStatus()
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) updateKeyboardStatus()
-        if (isStreaming) findViewById<View>(R.id.setupCard).visibility = if (setupDone) View.GONE else View.VISIBLE
+    private fun showStopped() {
+        isStreaming = false
+        showRequests(emptyList())
+        startButton.text = "Start Mirroring"
+        statusText.text = "Ready to stream"
+        statusDot.text = "○"
+        statusDot.setTextColor(getColor(R.color.text_muted))
+        showWebClient()
+        findViewById<View>(R.id.phoneScreenCard).visibility = View.GONE
     }
 
     private fun updateAccessibilityStatus() {
-        val on = RemoteAccessibilityService.isRunning()
-        setupDone = on
-        showSetupState(R.id.accessibilityIcon, R.id.accessibilityChip, on, if (on) "On" else "Set up")
-        accessibilityStatus.text =
-            if (on) "Accessibility service \u00B7 tap to open Android settings"
-            else "Accessibility service off \u00B7 tap to switch it on"
-        setupCaption.text = "Android only lets you switch these on in its own settings, so each row takes you there." +
-            if (!on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-                " On Android 13 and newer, first go to Settings \u2192 Apps \u2192 RemotePhone \u2192 \u22EE menu \u2192 Allow restricted settings."
-            else ""
+        if (RemoteAccessibilityService.isRunning()) {
+            accessibilityStatus.text = "Accessibility Service: ✓ Enabled"
+            accessibilityStatus.setTextColor(getColor(R.color.status_green))
+        } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                accessibilityStatus.text = "Accessibility Service: Not enabled\n⚠ On Android 13+: go to Settings → Apps → RemotePhone → ⋮ menu → \"Allow restricted settings\" first"
+            } else {
+                accessibilityStatus.text = "Accessibility Service: Not enabled"
+            }
+            accessibilityStatus.setTextColor(getColor(R.color.status_amber))
+        }
     }
 
     private fun isRemoteKeyboardEnabled(): Boolean {
@@ -323,36 +402,22 @@ class MainActivity : ComponentActivity() {
     private fun updateKeyboardStatus() {
         val selected = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
             ?.startsWith(packageName) == true
-        val enabled = isRemoteKeyboardEnabled()
-        if (!selected) setupDone = false
-        showSetupState(R.id.keyboardIcon, R.id.keyboardChip, selected, when {
-            selected -> "On"
-            enabled -> "Select"
-            else -> "Set up"
-        })
-        keyboardStatus.text = when {
-            selected -> "Keyboard selected \u00B7 tap to switch keyboards"
-            enabled -> "Keyboard enabled, not selected \u00B7 tap to choose it"
-            else -> "Keyboard not enabled \u00B7 tap to switch it on"
-        }
-    }
-
-    private fun getDeviceIpAddress(): String {
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
-            while (interfaces.hasMoreElements()) {
-                val iface = interfaces.nextElement()
-                if (iface.isLoopback || !iface.isUp) continue
-                val addresses = iface.inetAddresses
-                while (addresses.hasMoreElements()) {
-                    val addr = addresses.nextElement()
-                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                        return addr.hostAddress ?: "Unknown"
-                    }
-                }
+        when {
+            selected -> {
+                keyboardStatus.text = "RemotePhone Keyboard: \u2713 Active"
+                keyboardStatus.setTextColor(getColor(R.color.status_green))
+                keyboardButton.text = "Switch keyboard"
             }
-        } catch (_: Exception) {
+            isRemoteKeyboardEnabled() -> {
+                keyboardStatus.text = "RemotePhone Keyboard: enabled, not selected"
+                keyboardStatus.setTextColor(getColor(R.color.status_amber))
+                keyboardButton.text = "Switch keyboard"
+            }
+            else -> {
+                keyboardStatus.text = "RemotePhone Keyboard: not enabled"
+                keyboardStatus.setTextColor(getColor(R.color.status_amber))
+                keyboardButton.text = "Enable RemotePhone Keyboard"
+            }
         }
-        return "Not connected to WiFi"
     }
 }

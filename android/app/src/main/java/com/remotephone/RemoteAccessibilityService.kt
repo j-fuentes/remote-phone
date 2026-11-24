@@ -3,12 +3,20 @@ package com.remotephone
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Context
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.TextView
+import android.os.Handler
+import android.os.Looper
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import android.view.KeyEvent
@@ -20,8 +28,6 @@ class RemoteAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "RemoteAccessibility"
-        /** Length of one live-touch segment: about one display frame, so the finger trails the pointer by that much. */
-        private const val SEGMENT_MS = 16L
         private var instance: RemoteAccessibilityService? = null
 
         /** Selection captured at copy/cut time, for clients when the clipboard is unreadable. */
@@ -31,17 +37,17 @@ class RemoteAccessibilityService : AccessibilityService() {
 
         fun isRunning(): Boolean = instance != null
 
-        /** Set by the activity while visible; called on the main thread when the service connects or goes away. */
-        @Volatile var onStateChanged: (() -> Unit)? = null
-
-        /** Screen pixels per stream pixel: the stream can be smaller than the screen. */
-        @Volatile var inputScaleX = 1f
-        @Volatile var inputScaleY = 1f
-
-        /** Lift a finger a client left down (it disconnected mid-press); never wakes the screen. */
-        fun liftFinger() {
-            instance?.touch("cancel", 0f, 0f)
+        /** Black overlay on the phone's own screen (desktop mode); false when the service is off. */
+        fun setBlackout(on: Boolean): Boolean {
+            val service = instance ?: return false
+            service.mainHandler.post { if (on) service.showBlackout() else service.hideBlackout() }
+            return true
         }
+
+        fun isBlackout(): Boolean = instance?.blackout != null
+
+        /** Main thread; called when the overlay goes away by itself (swiped up, service stopped). */
+        @Volatile var onBlackoutChanged: (() -> Unit)? = null
 
         fun handleCommand(json: String) {
             val service = instance ?: run {
@@ -54,15 +60,28 @@ class RemoteAccessibilityService : AccessibilityService() {
 
             try {
                 val cmd = JSONObject(json)
-                fun x(key: String) = cmd.getDouble(key).toFloat() * inputScaleX
-                fun y(key: String) = cmd.getDouble(key).toFloat() * inputScaleY
                 when (cmd.getString("type")) {
-                    "tap" -> service.performTap(x("x"), y("y"))
-                    "swipe" -> service.performSwipe(x("x1"), y("y1"), x("x2"), y("y2"), cmd.optLong("duration", 300))
-                    "long_press" -> service.performLongPress(x("x"), y("y"), cmd.optLong("duration", 1000))
-                    "scroll" -> service.performScroll(x("x"), y("y"), cmd.getDouble("dy").toFloat())
-                    // "cancel" carries no position
-                    "touch" -> service.touch(cmd.getString("action"), if (cmd.has("x")) x("x") else 0f, if (cmd.has("y")) y("y") else 0f)
+                    "tap" -> service.performTap(
+                        cmd.getDouble("x").toFloat(),
+                        cmd.getDouble("y").toFloat()
+                    )
+                    "swipe" -> service.performSwipe(
+                        cmd.getDouble("x1").toFloat(),
+                        cmd.getDouble("y1").toFloat(),
+                        cmd.getDouble("x2").toFloat(),
+                        cmd.getDouble("y2").toFloat(),
+                        cmd.optLong("duration", 300)
+                    )
+                    "long_press" -> service.performLongPress(
+                        cmd.getDouble("x").toFloat(),
+                        cmd.getDouble("y").toFloat(),
+                        cmd.optLong("duration", 1000)
+                    )
+                    "scroll" -> service.performScroll(
+                        cmd.getDouble("x").toFloat(),
+                        cmd.getDouble("y").toFloat(),
+                        cmd.getDouble("dy").toFloat()
+                    )
                     "key" -> service.performKey(cmd.getString("action"))
                     // Text editing prefers the real input pipeline: on Android 13+ the
                     // service holds its own InputConnection (flagInputMethodEditor), so
@@ -71,8 +90,9 @@ class RemoteAccessibilityService : AccessibilityService() {
                     // accessibility node actions below are the last resort.
                     "text" -> {
                         val content = cmd.getString("content")
-                        // PIN/password fields: the lock screen pad takes button clicks, so
-                        // those come first; performTextInput falls back to the keyboard.
+                        // PIN/password fields (incl. the lock screen) are button grids,
+                        // not text editors: only clicking the on-screen pad works, so
+                        // skip the input-connection paths for them.
                         if (service.isPasswordFieldFocused()) service.performTextInput(content)
                         else if (!service.imeCommit(content) &&
                             !RemoteInputMethodService.typeText(content)) service.performTextInput(content)
@@ -115,15 +135,12 @@ class RemoteAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        ScreenCaptureService.setControl(true)
-        onStateChanged?.invoke()
         Log.i(TAG, "Accessibility service connected — remote control ready")
     }
 
     override fun onDestroy() {
+        hideBlackout()
         instance = null
-        ScreenCaptureService.setControl(false)
-        onStateChanged?.invoke()
         Log.i(TAG, "Accessibility service destroyed")
         super.onDestroy()
     }
@@ -180,6 +197,66 @@ class RemoteAccessibilityService : AccessibilityService() {
         performContextMenuAction(if (cut) android.R.id.cut else android.R.id.copy)
     } != null
 
+    // ---- Black overlay ----
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var blackout: View? = null
+
+    /**
+     * Covers the phone screen in black at minimum brightness while the desktop display keeps
+     * running; an accessibility overlay needs no extra permission and also covers the lock screen.
+     * Swiping up anywhere removes it.
+     */
+    private fun showBlackout() {
+        if (blackout != null) return
+        val density = resources.displayMetrics.density
+        val hint = TextView(this).apply {
+            text = "⌃\nSwipe up to show the screen"
+            setTextColor(Color.rgb(70, 70, 70))
+            textSize = 13f
+            gravity = Gravity.CENTER
+        }
+        val view = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            addView(hint, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = (48 * density).toInt() })
+        }
+        var downY = 0f
+        view.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> downY = ev.rawY
+                MotionEvent.ACTION_UP -> if (downY - ev.rawY > 120 * density) { hideBlackout(); onBlackoutChanged?.invoke() }
+            }
+            true
+        }
+        @Suppress("DEPRECATION")
+        view.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LOW_PROFILE
+        @Suppress("DEPRECATION")
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_FULLSCREEN,
+            PixelFormat.OPAQUE
+        ).apply {
+            screenBrightness = 0f  // as dark as the panel goes
+            if (Build.VERSION.SDK_INT >= 28) layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        try {
+            getSystemService(WindowManager::class.java).addView(view, params)
+            blackout = view
+        } catch (t: Throwable) {
+            Log.e(TAG, "blackout overlay failed", t)
+        }
+    }
+
+    private fun hideBlackout() {
+        val view = blackout ?: return
+        blackout = null
+        try { getSystemService(WindowManager::class.java).removeView(view) } catch (_: Throwable) {}
+    }
+
     // ---- Screen wake ----
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -234,42 +311,40 @@ class RemoteAccessibilityService : AccessibilityService() {
      * Used for PIN pad and on-screen keyboard interaction.
      */
     private fun clickButtonByLabel(label: String): Boolean {
-        for (node in labelledNodes(label)) {
-            if (node.isClickable) {
-                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                Log.d(TAG, "Clicked button '$label'")
-                return true
-            }
-            // If node itself isn't clickable, try its parent
-            var parent = node.parent
-            while (parent != null) {
-                if (parent.isClickable) {
-                    parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    Log.d(TAG, "Clicked parent of '$label'")
+        val root = rootInActiveWindow ?: return false
+        val nodes = root.findAccessibilityNodeInfosByText(label)
+        for (node in nodes) {
+            val nodeText = node.text?.toString()?.trim() ?: ""
+            val nodeDesc = node.contentDescription?.toString()?.trim() ?: ""
+            // Match exact label (avoid "10" matching "1")
+            if (nodeText == label || nodeDesc == label) {
+                if (node.isClickable) {
+                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    Log.d(TAG, "Clicked button '$label'")
                     return true
                 }
-                parent = parent.parent
-            }
-            // Fallback: tap the center of the node's bounds
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
-            if (rect.width() > 0 && rect.height() > 0) {
-                performTap(rect.centerX().toFloat(), rect.centerY().toFloat())
-                Log.d(TAG, "Tapped center of '$label' at (${rect.centerX()}, ${rect.centerY()})")
-                return true
+                // If node itself isn't clickable, try its parent
+                var parent = node.parent
+                while (parent != null) {
+                    if (parent.isClickable) {
+                        parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        Log.d(TAG, "Clicked parent of '$label'")
+                        return true
+                    }
+                    parent = parent.parent
+                }
+                // Fallback: tap the center of the node's bounds
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                if (rect.width() > 0 && rect.height() > 0) {
+                    performTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+                    Log.d(TAG, "Tapped center of '$label' at (${rect.centerX()}, ${rect.centerY()})")
+                    return true
+                }
             }
         }
         return false
     }
-
-    /** Nodes labelled exactly [label] in text or description (so "10" does not match "1"). */
-    private fun labelledNodes(label: String): List<AccessibilityNodeInfo> =
-        rootInActiveWindow?.findAccessibilityNodeInfosByText(label)?.filter {
-            it.text?.toString()?.trim() == label || it.contentDescription?.toString()?.trim() == label
-        } ?: emptyList()
-
-    /** A numeric pad (the lock screen) always has a 0 key; an app's password field has none. */
-    private fun hasPinPad() = labelledNodes("0").isNotEmpty()
 
     private fun findEditableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (node.isFocused && node.isEditable) return node
@@ -331,17 +406,15 @@ class RemoteAccessibilityService : AccessibilityService() {
         // For password/PIN fields: click the on-screen buttons
         if (isPasswordFieldFocused()) {
             if (content == "\n") {
-                // Enter/confirm on a PIN pad: try common labels. Elsewhere the search
-                // would tap text like "Enter the SSID", so go straight to the keyboard.
-                val pad = hasPinPad()
-                if (!pad || !clickButtonByLabel("OK") &&
+                // Enter/confirm on PIN pad — try common labels
+                if (!clickButtonByLabel("OK") &&
                     !clickButtonByLabel("Done") &&
                     !clickButtonByLabel("Enter") &&
                     !clickButtonByLabel("Confirm") &&
                     !clickButtonByLabel("✓") &&
                     !clickButtonByLabel("ENTER")) {
                     // Last resort: find any node with "enter"/"ok"/"confirm" in description
-                    val root = if (pad) rootInActiveWindow else null
+                    val root = rootInActiveWindow
                     if (root != null) {
                         for (keyword in listOf("enter", "ok", "confirm", "done", "check")) {
                             val nodes = root.findAccessibilityNodeInfosByText(keyword)
@@ -356,14 +429,10 @@ class RemoteAccessibilityService : AccessibilityService() {
                             }
                         }
                     }
-                    if (!imeCommit(content)) RemoteInputMethodService.typeText(content)
                 }
             } else {
-                // No on-screen key means an app's password field, typed through the keyboard;
-                // ACTION_SET_TEXT is never used here, as the node's text is masked
                 for (ch in content) {
-                    val s = ch.toString()
-                    if (!clickButtonByLabel(s) && !imeCommit(s)) RemoteInputMethodService.typeText(s)
+                    clickButtonByLabel(ch.toString())
                 }
             }
             return
@@ -398,13 +467,12 @@ class RemoteAccessibilityService : AccessibilityService() {
     private fun performBackspace() {
         // For password/PIN fields: click the on-screen delete/backspace button
         if (isPasswordFieldFocused()) {
-            // Try common labels for the delete button on PIN pads; elsewhere use the keyboard
-            val pad = hasPinPad()
-            if (!pad || !clickButtonByLabel("Delete") &&
+            // Try common labels for the delete button on PIN pads
+            if (!clickButtonByLabel("Delete") &&
                 !clickButtonByLabel("delete") &&
                 !clickButtonByLabel("Backspace")) {
                 // Fallback: find a node with delete content description
-                val root = if (pad) rootInActiveWindow else null
+                val root = rootInActiveWindow
                 if (root != null) {
                     val nodes = root.findAccessibilityNodeInfosByText("delete")
                     for (node in nodes) {
@@ -416,7 +484,6 @@ class RemoteAccessibilityService : AccessibilityService() {
                         }
                     }
                 }
-                if (!imeKey(KeyEvent.KEYCODE_DEL)) RemoteInputMethodService.backspace()
             }
             return
         }
@@ -477,74 +544,6 @@ class RemoteAccessibilityService : AccessibilityService() {
     private fun dispatch(path: Path, durationMs: Long) {
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
         dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
-    }
-
-    // ---- Live touch (Android 8+) ----
-    // One finger that stays down across gestures: each segment continues the previous stroke,
-    // so the phone follows the pointer while it moves instead of replaying a swipe after
-    // release. A segment has to finish before the next can continue it, so moves that arrive
-    // meanwhile collapse into one segment to the newest position. All state lives on the main
-    // thread, which is also where gesture results are delivered.
-    private val main = Handler(Looper.getMainLooper())
-    private var finger: GestureDescription.StrokeDescription? = null    // down and idle, can be continued
-    private var inFlight: GestureDescription.StrokeDescription? = null  // segment being played
-    private var atX = 0f
-    private var atY = 0f       // where the finger is: the end of the last finished segment
-    private var toX = 0f
-    private var toY = 0f       // newest position a client asked for
-    private var moved = false  // toX/toY not yet reached
-    private var lift = false   // finger must come up after reaching toX/toY
-
-    private fun touch(action: String, x: Float, y: Float) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        main.post {
-            when (action) {
-                "down" -> {
-                    // A new press replaces a finger that never came up
-                    finger = null; moved = false; lift = false
-                    atX = x; atY = y; toX = x; toY = y
-                    playSegment(Path().apply { moveTo(x, y) }, null, willContinue = true)
-                }
-                "move" -> { toX = x; toY = y; moved = true; continueFinger() }
-                "up" -> { toX = x; toY = y; moved = true; lift = true; continueFinger() }
-                "cancel" -> { lift = true; continueFinger() }
-            }
-        }
-    }
-
-    /** Play whatever is pending (a move, a lift or both) as the next segment, if the finger is idle. */
-    private fun continueFinger() {
-        val from = finger ?: return  // not down, or a segment is in flight and will call back here
-        if (!moved && !lift) return
-        val path = Path().apply { moveTo(atX, atY); if (moved) lineTo(toX, toY) }
-        playSegment(path, from, willContinue = !lift)
-    }
-
-    private fun playSegment(path: Path, from: GestureDescription.StrokeDescription?, willContinue: Boolean) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val endX = toX
-        val endY = toY
-        finger = null; moved = false; lift = false
-        val stroke = try {
-            from?.continueStroke(path, 0, SEGMENT_MS, willContinue)
-                ?: GestureDescription.StrokeDescription(path, 0, SEGMENT_MS, willContinue)
-        } catch (e: IllegalArgumentException) {
-            return  // coordinates outside the screen: drop the finger
-        }
-        inFlight = stroke
-        val accepted = dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), object : GestureResultCallback() {
-            override fun onCompleted(gesture: GestureDescription) {
-                if (inFlight !== stroke) return  // a newer press took over
-                inFlight = null
-                atX = endX; atY = endY
-                if (willContinue) { finger = stroke; continueFinger() }
-            }
-
-            override fun onCancelled(gesture: GestureDescription) {
-                if (inFlight === stroke) inFlight = null
-            }
-        }, null)
-        if (!accepted) inFlight = null
     }
 
     private fun performTap(x: Float, y: Float) =
