@@ -1,11 +1,15 @@
-name: Build APK (desktop mode branch)
+name: Build production APK
 
-# Debug build for testing the dex-desktop branch on a phone; releases still come from release.yml
+# Builds signed APKs from the branches used to test the Android app. Each run
+# gets its own prerelease, keeping official version-tag releases untouched.
 on:
   push:
-    branches: [dex-desktop, embedded-web]
+    branches: [main, dex-desktop, embedded-web]
     paths: ['android/**', 'web/**', '.github/workflows/build-apk.yml']
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -20,18 +24,40 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > android/app/release-keystore.jks
+
+      - name: Create keystore properties
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |-
+          printf 'storeFile=app/release-keystore.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > android/keystore.properties
+
+      - name: Build release APK
         working-directory: android
-        run: ./gradlew --no-daemon assembleDebug
+        run: ./gradlew --no-daemon assembleRelease
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v5
-        with:
-          name: RemotePhone-desktop-debug
-          path: android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+      - name: Name APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk RemotePhone-release.apk
 
-      - name: Upload build reports
+      - name: Publish direct APK download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: build-${{ github.run_number }}
+        run: |-
+          gh release create "$TAG" RemotePhone-release.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Test APK #${GITHUB_RUN_NUMBER}" \
+            --notes "Signed production APK built from ${GITHUB_SHA}."
+
+      - name: Upload build reports on failure
         if: failure()
         uses: actions/upload-artifact@v5
         with:
