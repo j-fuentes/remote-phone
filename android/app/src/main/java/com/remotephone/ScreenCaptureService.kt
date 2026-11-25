@@ -114,6 +114,9 @@ class ScreenCaptureService : Service() {
         /** Main thread, on every start/stop: an open main screen follows the Quick Settings tile. */
         @Volatile var onRunningChanged: (() -> Unit)? = null
 
+        /** Main thread: keep the microphone switch in an open activity aligned with remote controls. */
+        @Volatile var onMicrophoneChanged: ((Boolean) -> Unit)? = null
+
         /** Mirroring, or about to (between the consent and the video being ready). */
         fun isActive(): Boolean = instance?.let { it.isRunning || it.isStarting } == true
 
@@ -162,6 +165,10 @@ class ScreenCaptureService : Service() {
             MirrorTileService.listening?.invoke()
             MirrorTileService.refresh(this)
         }
+    }
+
+    private fun microphoneChanged() {
+        mainHandler.post { onMicrophoneChanged?.invoke(microphoneEnabled) }
     }
 
     // Video
@@ -803,6 +810,7 @@ class ScreenCaptureService : Service() {
             }
         }, "PhoneMicrophone").apply { start() }
         webSocketServer?.broadcastState("microphone", true)
+        microphoneChanged()
     }
 
     private fun stopMicrophone() {
@@ -812,6 +820,7 @@ class ScreenCaptureService : Service() {
         microphoneThread?.interrupt()
         microphoneThread = null
         webSocketServer?.broadcastState("microphone", false)
+        microphoneChanged()
     }
 
     private fun restartMicrophoneIfNeeded() {

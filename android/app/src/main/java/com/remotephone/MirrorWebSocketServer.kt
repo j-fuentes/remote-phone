@@ -286,6 +286,9 @@ class MirrorWebSocketServer(
         synchronized(lock) {
             try {
                 conn.send(approvalJson("granted", secret))
+                // A client which joins after the microphone was enabled must not assume it is muted.
+                conn.send(JSONObject().put("type", "microphone")
+                    .put("enabled", ScreenCaptureService.microphoneEnabled()).toString())
                 videoConfigFrame?.let { conn.send(it) }
                 gop.forEach { conn.send(it) }
             } catch (e: Exception) {

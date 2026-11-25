@@ -124,16 +124,7 @@ class MainActivity : ComponentActivity() {
             ScreenCaptureService.toggleAudio(isChecked)
         }
         setupMicrophonePicker()
-        microphoneCaptureToggle.setOnCheckedChangeListener { _, enabled ->
-            if (!enabled) {
-                ScreenCaptureService.toggleMicrophone(false)
-            } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                ScreenCaptureService.toggleMicrophone(true)
-            } else {
-                microphoneCaptureToggle.isChecked = false
-                microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
-            }
-        }
+        microphoneCaptureToggle.setOnCheckedChangeListener(::onMicrophoneCaptureChanged)
 
         findViewById<Button>(R.id.shareClipboardButton).setOnClickListener {
             val message = when {
@@ -231,6 +222,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun onMicrophoneCaptureChanged(_: android.widget.CompoundButton, enabled: Boolean) {
+        if (!enabled) {
+            ScreenCaptureService.toggleMicrophone(false)
+        } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            ScreenCaptureService.toggleMicrophone(true)
+        } else {
+            microphoneCaptureToggle.isChecked = false
+            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun syncMicrophoneToggle(enabled: Boolean) {
+        if (microphoneCaptureToggle.isChecked == enabled) return
+        microphoneCaptureToggle.setOnCheckedChangeListener(null)
+        microphoneCaptureToggle.isChecked = enabled
+        microphoneCaptureToggle.setOnCheckedChangeListener(::onMicrophoneCaptureChanged)
+    }
+
     override fun onResume() {
         super.onResume()
         try {
@@ -244,6 +253,7 @@ class MainActivity : ComponentActivity() {
         showWebClient()
         ScreenCaptureService.onClientsChanged = ::showStreaming
         ScreenCaptureService.onRunningChanged = ::syncStreaming
+        ScreenCaptureService.onMicrophoneChanged = ::syncMicrophoneToggle
         syncStreaming()
     }
 
@@ -254,16 +264,7 @@ class MainActivity : ComponentActivity() {
         else if (isStreaming && !ScreenCaptureService.isActive()) showStopped()
         showPhoneScreenCard()
         microphoneCaptureToggle.isEnabled = ScreenCaptureService.isActive()
-        if (microphoneCaptureToggle.isChecked != ScreenCaptureService.microphoneEnabled()) {
-            microphoneCaptureToggle.setOnCheckedChangeListener(null)
-            microphoneCaptureToggle.isChecked = ScreenCaptureService.microphoneEnabled()
-            microphoneCaptureToggle.setOnCheckedChangeListener { _, enabled ->
-                if (enabled && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    microphoneCaptureToggle.isChecked = false
-                    microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
-                } else ScreenCaptureService.toggleMicrophone(enabled)
-            }
-        }
+        syncMicrophoneToggle(ScreenCaptureService.microphoneEnabled())
     }
 
     /** Desktop mode streaming: the phone's own screen can go dark while the desktop keeps running. */
@@ -279,6 +280,7 @@ class MainActivity : ComponentActivity() {
         uiHandler.removeCallbacks(refreshAddresses)
         ScreenCaptureService.onClientsChanged = null
         ScreenCaptureService.onRunningChanged = null
+        ScreenCaptureService.onMicrophoneChanged = null
         super.onPause()
     }
 
