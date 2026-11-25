@@ -20,9 +20,10 @@ _MAX_QUEUED = 4   # chunks (~93 ms each) held; past that the backlog is dropped 
 class AudioPlayer:
     """Simple PCM audio player using sounddevice."""
 
-    def __init__(self):
+    def __init__(self, channels: int = 2):
         self._stream = None
         self._thread = None
+        self._channels = channels
         self._queue = queue.Queue(maxsize=_MAX_QUEUED)
 
     def start(self):
@@ -33,7 +34,7 @@ class AudioPlayer:
         try:
             self._stream = sd.RawOutputStream(
                 samplerate=44100,
-                channels=2,
+                channels=self._channels,
                 dtype='int16',
                 blocksize=4096,
                 latency='low',
@@ -69,7 +70,8 @@ class AudioPlayer:
                 return
             try:
                 # Only whole stereo frames; a trailing partial sample is dropped
-                stream.write(data[:len(data) // _FRAME_BYTES * _FRAME_BYTES])
+                frame_bytes = self._channels * 2
+                stream.write(data[:len(data) // frame_bytes * frame_bytes])
             except Exception:
                 pass  # Don't crash on audio glitches
 

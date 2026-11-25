@@ -201,6 +201,37 @@
                 android:layout_height="wrap_content" />
         </LinearLayout>
 
+        <!-- The phone microphone is only sent after an approved desktop asks for it. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/card_background"
+            android:padding="16dp"
+            android:layout_marginTop="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Microphone input"
+                android:textSize="14sp"
+                android:textColor="@color/text_secondary" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Used when an approved computer enables Phone microphone"
+                android:textSize="11sp"
+                android:textColor="@color/text_hint"
+                android:layout_marginTop="2dp" />
+
+            <Spinner
+                android:id="@+id/microphoneDevice"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" />
+        </LinearLayout>
+
         <!-- Clipboard sharing is always explicit, because its contents may be sensitive. -->
         <LinearLayout
             android:id="@+id/clipboardCard"

@@ -10,6 +10,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.PowerManager
 import android.content.res.Configuration
@@ -18,6 +19,7 @@ import android.hardware.display.VirtualDisplay
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioTrack
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.MediaCodec
@@ -62,12 +64,19 @@ class ScreenCaptureService : Service() {
         const val FRAME_VIDEO_DELTA: Byte = 0x02
         const val FRAME_AUDIO_CONFIG: Byte = 0x10
         const val FRAME_AUDIO_DATA: Byte = 0x11
+        /** PCM from the desktop client, played on the phone's selected media output. */
+        const val FRAME_PC_AUDIO_DATA: Byte = 0x12
+        /** PCM from the selected phone input, sent to the desktop client. */
+        const val FRAME_PHONE_MIC_DATA: Byte = 0x13
 
         private var instance: ScreenCaptureService? = null
 
         fun toggleAudio(enabled: Boolean) {
             instance?.setAudioEnabled(enabled)
         }
+        fun togglePcAudio(enabled: Boolean) { instance?.setPcAudioEnabled(enabled) }
+        fun toggleMicrophone(enabled: Boolean) { instance?.setMicrophoneEnabled(enabled) }
+        fun microphoneDeviceChanged() { instance?.restartMicrophoneIfNeeded() }
 
         /** Shares the current text clipboard with connected, authorized clients. */
         fun shareClipboard(): Boolean = instance?.webSocketServer?.shareClipboard() == true
@@ -166,6 +175,13 @@ class ScreenCaptureService : Service() {
     private var audioThread: Thread? = null
     private var audioEnabled = false
     private var audioAvailable = false
+
+    // Bidirectional PC audio: media played by Android routes naturally to wired/Bluetooth headphones.
+    private var pcAudioTrack: AudioTrack? = null
+    @Volatile private var pcAudioEnabled = false
+    private var microphoneRecord: AudioRecord? = null
+    private var microphoneThread: Thread? = null
+    @Volatile private var microphoneEnabled = false
     private var savedMusicVolume = 0
 
     // Network
@@ -372,6 +388,7 @@ class ScreenCaptureService : Service() {
                 // Desktop mode injects on its own display; what it doesn't handle goes to accessibility
                 if (!handlePhoneScreen(cmd) && desktop?.handle(cmd) != true) RemoteAccessibilityService.handleCommand(cmd)
             },
+            onBinaryFrame = { frame -> handleIncomingAudio(frame) },
             onClientsChanged = { mainHandler.post(publishClients) },
             onApprovalRequest = { id, label -> requestApproval(id, label) },
             desktop = desktop != null
@@ -723,6 +740,85 @@ class ScreenCaptureService : Service() {
         webSocketServer?.broadcastFrame(frame)
     }
 
+    /** Raw PCM frames may only arrive through an already authorized WebSocket connection. */
+    private fun handleIncomingAudio(frame: ByteArray) {
+        if (frame[0] != FRAME_PC_AUDIO_DATA || !pcAudioEnabled) return
+        val size = ByteBuffer.wrap(frame, 5, 4).int
+        if (size < 0 || size > frame.size - 9) return
+        val track = pcAudioTrack ?: return
+        try { track.write(frame, 9, size, AudioTrack.WRITE_NON_BLOCKING) }
+        catch (e: Exception) { Log.w(TAG, "PC audio playback failed", e) }
+    }
+
+    private fun setPcAudioEnabled(enabled: Boolean) {
+        if (enabled == pcAudioEnabled) return
+        if (enabled) {
+            val format = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(44100).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build()
+            val size = AudioTrack.getMinBufferSize(44100, AudioFormat.CHANNEL_OUT_STEREO,
+                AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(16384)
+            val track = AudioTrack.Builder()
+                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                .setAudioFormat(format).setBufferSizeInBytes(size).setTransferMode(AudioTrack.MODE_STREAM).build()
+            if (track.state != AudioTrack.STATE_INITIALIZED) { track.release(); return }
+            pcAudioTrack = track
+            track.play()
+            pcAudioEnabled = true
+        } else {
+            pcAudioEnabled = false
+            pcAudioTrack?.let { try { it.pause(); it.flush(); it.release() } catch (_: Exception) {} }
+            pcAudioTrack = null
+        }
+        webSocketServer?.broadcastState("pc_audio", pcAudioEnabled)
+    }
+
+    private fun setMicrophoneEnabled(enabled: Boolean) {
+        if (enabled == microphoneEnabled) return
+        if (!enabled) { stopMicrophone(); return }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "Phone microphone requested without RECORD_AUDIO permission")
+            webSocketServer?.broadcastError("Allow microphone access in the phone app first")
+            return
+        }
+        val format = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setSampleRate(44100).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
+        val size = AudioRecord.getMinBufferSize(44100, AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(8192)
+        val record = AudioRecord.Builder().setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
+            .setAudioFormat(format).setBufferSizeInBytes(size).build()
+        val preferred = (getSystemService(Context.AUDIO_SERVICE) as AudioManager)
+            .getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.id == Prefs.microphoneDevice(this) }
+        preferred?.let { record.preferredDevice = it }
+        if (record.state != AudioRecord.STATE_INITIALIZED) { record.release(); return }
+        microphoneRecord = record
+        microphoneEnabled = true
+        record.startRecording()
+        microphoneThread = Thread({
+            val buffer = ByteArray(size)
+            while (microphoneEnabled && isRunning) {
+                val read = try { record.read(buffer, 0, buffer.size) } catch (_: Exception) { -1 }
+                if (read > 0) sendFrame(FRAME_PHONE_MIC_DATA, (System.nanoTime() / 1_000_000).toInt(), buffer.copyOf(read))
+            }
+        }, "PhoneMicrophone").apply { start() }
+        webSocketServer?.broadcastState("microphone", true)
+    }
+
+    private fun stopMicrophone() {
+        microphoneEnabled = false
+        microphoneRecord?.let { try { it.stop(); it.release() } catch (_: Exception) {} }
+        microphoneRecord = null
+        microphoneThread?.interrupt()
+        microphoneThread = null
+        webSocketServer?.broadcastState("microphone", false)
+    }
+
+    private fun restartMicrophoneIfNeeded() {
+        if (!microphoneEnabled) return
+        stopMicrophone()
+        setMicrophoneEnabled(true)
+    }
+
     private fun stopCapture() {
         if (!isRunning && !isStarting) return
         isRunning = false
@@ -730,6 +826,7 @@ class ScreenCaptureService : Service() {
 
         // Restore phone volume if audio was streaming
         try { setAudioEnabled(false) } catch (_: Exception) {}
+        try { setPcAudioEnabled(false); stopMicrophone() } catch (_: Exception) {}
 
         // Stop threads
         videoThread?.interrupt()

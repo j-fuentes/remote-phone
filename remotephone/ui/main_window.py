@@ -19,10 +19,11 @@ from PyQt6.QtCore import Qt, QRectF, QTimer, QSettings, QSize, QUrl, pyqtSignal
 from PyQt6.QtGui import (QImage, QPainter, QColor, QFont, QFontDatabase, QIntValidator, QKeyEvent, QIcon,
                          QDesktopServices)
 
-from remotephone.network.ws_client import WebSocketClient, FRAME_AUDIO_DATA
+from remotephone.network.ws_client import WebSocketClient, FRAME_AUDIO_DATA, FRAME_PC_AUDIO_DATA, FRAME_PHONE_MIC_DATA
 from remotephone.network.scanner import NetworkScanner
 from remotephone.decoder.video_decoder import VideoDecoder
 from remotephone.decoder.audio_player import AudioPlayer
+from remotephone.decoder.audio_input import AudioInput
 from remotephone.input.input_handler import InputHandler
 
 _BACK = {"type": "key", "action": "back"}
@@ -282,6 +283,8 @@ class MainWindow(QMainWindow):
         self.ws_client = WebSocketClient()
         self.decoder = VideoDecoder()
         self.audio_player = AudioPlayer()
+        self.phone_mic_monitor = AudioPlayer(channels=1)
+        self.pc_audio_input = AudioInput(lambda pcm: self.ws_client.send_audio_frame(FRAME_PC_AUDIO_DATA, pcm))
         self.input_handler = InputHandler()
         self.scanner = NetworkScanner()
 
@@ -543,9 +546,15 @@ class MainWindow(QMainWindow):
         self.audio_btn.setIcon(icon)
         self.audio_btn.setCheckable(True)
         self.audio_btn.setEnabled(False)
+        self.phone_sink_btn = _tool("volume", "Send the selected PC audio input to phone headphones")
+        self.phone_sink_btn.setCheckable(True)
+        self.phone_sink_btn.setEnabled(False)
+        self.phone_mic_btn = _tool("microphone", "Receive the selected phone microphone")
+        self.phone_mic_btn.setCheckable(True)
+        self.phone_mic_btn.setEnabled(False)
         self.fullscreen_btn = _tool("fullscreen", "Fullscreen (F11)")
         self.disconnect_btn = _tool("close", "Disconnect")
-        for btn in (self.audio_btn, self.fullscreen_btn, self.disconnect_btn):
+        for btn in (self.audio_btn, self.phone_sink_btn, self.phone_mic_btn, self.fullscreen_btn, self.disconnect_btn):
             row.addWidget(btn)
         col.addWidget(bar)
 
@@ -608,6 +617,8 @@ class MainWindow(QMainWindow):
 
         # Audio toggle
         self.audio_btn.toggled.connect(self._on_audio_toggled)
+        self.phone_sink_btn.toggled.connect(self._on_phone_sink_toggled)
+        self.phone_mic_btn.toggled.connect(self._on_phone_mic_toggled)
 
     def _apply_stylesheet(self):
         on, off = (str(ICONS / f"switch-{s}.svg").replace("\\", "/") for s in ("on", "off"))
@@ -754,9 +765,15 @@ class MainWindow(QMainWindow):
         self._control_off = False
         self.decoder.stop()
         self.audio_player.stop()
+        self.phone_mic_monitor.stop()
+        self.pc_audio_input.stop()
         self.input_handler.reset()
         self.video_widget._pressing = False
         self.audio_btn.setChecked(False)  # the phone sends its audio state again once we are back
+        for button in (self.phone_sink_btn, self.phone_mic_btn):
+            button.blockSignals(True)
+            button.setChecked(False)
+            button.blockSignals(False)
         if not clean:  # the client keeps retrying
             self.stats_label.setText(self._resolution)
             if was_connected:
@@ -770,6 +787,8 @@ class MainWindow(QMainWindow):
         self._resolution = ""
         self.stats_label.setText("")
         self.audio_btn.setEnabled(False)
+        self.phone_sink_btn.setEnabled(False)
+        self.phone_mic_btn.setEnabled(False)
         self.video_widget.image = None
         self.video_widget.update()
         self.setWindowTitle("RemotePhone")
@@ -789,6 +808,9 @@ class MainWindow(QMainWindow):
 
         if info.get("audioAvailable", False):
             self.audio_btn.setEnabled(True)
+        # Added in protocol v1 without a server-version bump: unknown older phones simply omit it.
+        self.phone_sink_btn.setEnabled(info.get("pcAudioAvailable", True))
+        self.phone_mic_btn.setEnabled(info.get("microphoneAvailable", True))
         self.input_handler.live = bool(info.get("liveTouch"))
 
     def _on_approval(self, state: str):
@@ -887,6 +909,8 @@ class MainWindow(QMainWindow):
         # Video goes straight from the WS thread to the decoder; only audio arrives here
         if frame_type == FRAME_AUDIO_DATA:
             self.audio_player.feed(data)
+        elif frame_type == FRAME_PHONE_MIC_DATA:
+            self.phone_mic_monitor.feed(data)
 
     def _on_decoded_frame(self, image: QImage):
         self.video_widget.update_frame(image)
@@ -975,10 +999,34 @@ class MainWindow(QMainWindow):
         else:
             self.audio_player.stop()
 
+    def _on_phone_sink_toggled(self, checked: bool):
+        if not self.connected:
+            return
+        if checked and not self.pc_audio_input.start():
+            self.phone_sink_btn.blockSignals(True)
+            self.phone_sink_btn.setChecked(False)
+            self.phone_sink_btn.blockSignals(False)
+            self._on_error("No PC audio input is available. Select a loopback input (for example BlackHole) in the operating system.")
+            return
+        if not checked:
+            self.pc_audio_input.stop()
+        self._send_command({"type": "toggle_pc_audio", "enabled": checked})
+
+    def _on_phone_mic_toggled(self, checked: bool):
+        if not self.connected:
+            return
+        self._send_command({"type": "toggle_microphone", "enabled": checked})
+        if checked:
+            self.phone_mic_monitor.start()
+        else:
+            self.phone_mic_monitor.stop()
+
     # ── Cleanup ──
 
     def closeEvent(self, event):
         self.ws_client.disconnect()
         self.decoder.stop()
         self.audio_player.stop()
+        self.phone_mic_monitor.stop()
+        self.pc_audio_input.stop()
         super().closeEvent(event)

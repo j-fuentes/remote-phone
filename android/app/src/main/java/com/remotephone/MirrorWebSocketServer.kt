@@ -26,6 +26,8 @@ class MirrorWebSocketServer(
     private var screenHeight: Int,
     private val audioAvailable: Boolean,
     private val onControlCommand: (String) -> Unit,
+    /** Raw audio from an approved desktop client, framed by the common 9-byte protocol header. */
+    private val onBinaryFrame: (ByteArray) -> Unit,
     private val onClientsChanged: () -> Unit,
     private val onApprovalRequest: (id: String, label: String) -> Unit,
     /** Streaming a desktop display (DeX / Android desktop) instead of the phone screen. */
@@ -41,6 +43,11 @@ class MirrorWebSocketServer(
         override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) =
             this@MirrorWebSocketServer.onClose(conn, code, reason, remote)
         override fun onMessage(conn: WebSocket, message: String) = this@MirrorWebSocketServer.onMessage(conn, message)
+        override fun onMessage(conn: WebSocket, message: ByteBuffer) {
+            val bytes = ByteArray(message.remaining())
+            message.get(bytes)
+            this@MirrorWebSocketServer.onBinaryMessage(conn, bytes)
+        }
         override fun onError(conn: WebSocket?, ex: Exception) {
             if (conn == null) failed = true  // bind failed: the next rebind retries this address
             this@MirrorWebSocketServer.onError(conn, ex)
@@ -180,6 +187,8 @@ class MirrorWebSocketServer(
                     val enabled = json.getBoolean("enabled")
                     ScreenCaptureService.toggleAudio(enabled)
                 }
+                "toggle_pc_audio" -> ScreenCaptureService.togglePcAudio(json.getBoolean("enabled"))
+                "toggle_microphone" -> ScreenCaptureService.toggleMicrophone(json.getBoolean("enabled"))
                 "copy", "cut" -> {
                     onControlCommand(message)
                     // Mirror the phone clipboard back once the action has landed.
@@ -195,6 +204,12 @@ class MirrorWebSocketServer(
         } catch (e: Exception) {
             Log.e(TAG, "Error processing message: $message", e)
         }
+    }
+
+    /** Binary input is deliberately accepted only after the same Allow/auth flow as controls. */
+    private fun onBinaryMessage(conn: WebSocket, frame: ByteArray) {
+        if (frame.size < 9 || !synchronized(lock) { conn in ready }) return
+        onBinaryFrame(frame)
     }
 
     private fun hello(conn: WebSocket, json: JSONObject) {
@@ -315,6 +330,8 @@ class MirrorWebSocketServer(
         put("screenWidth", screenWidth)
         put("screenHeight", screenHeight)
         put("audioAvailable", audioAvailable)
+        put("pcAudioAvailable", true)
+        put("microphoneAvailable", true)
         put("androidVersion", Build.VERSION.RELEASE)
         // Clients switch to real mouse/keyboard input on a desktop display
         put("desktop", desktop)
@@ -326,6 +343,10 @@ class MirrorWebSocketServer(
 
     /** Re-sends the device info, e.g. after the phone was renamed. */
     fun refreshInfo() = broadcast(infoJson())
+
+    /** State notifications keep every connected desktop client in sync with a phone-side change. */
+    fun broadcastState(type: String, enabled: Boolean) = broadcast(JSONObject().put("type", type).put("enabled", enabled).toString())
+    fun broadcastError(message: String) = broadcast(JSONObject().put("type", "error").put("message", message).toString())
 
     fun updateScreenSize(width: Int, height: Int) {
         screenWidth = width

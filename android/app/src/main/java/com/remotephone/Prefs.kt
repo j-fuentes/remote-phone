@@ -11,6 +11,7 @@ object Prefs {
     const val MULTIPLE = "allow_multiple"     // more than one computer at a time
     const val WEB_CLIENT = "web_client"     // serve the browser client from the phone while mirroring
     const val DESKTOP = "desktop_mode"        // stream a Shizuku-created desktop display instead of the phone screen
+    const val MICROPHONE_DEVICE = "microphone_device" // AudioDeviceInfo.id, -1 lets Android choose
     private const val DESKTOP_WIDTH = "desktop_width"
     const val PHONE_NAME = "phone_name"            // shown to clients instead of the model name
     private const val DISABLED_INTERFACES = "disabled_interfaces"  // network kinds clients may not connect through
@@ -28,6 +29,8 @@ object Prefs {
     fun multiple(ctx: Context) = prefs(ctx).getBoolean(MULTIPLE, false)
     fun desktop(ctx: Context) = prefs(ctx).getBoolean(DESKTOP, false)
     fun webClient(ctx: Context) = prefs(ctx).getBoolean(WEB_CLIENT, false)
+    fun microphoneDevice(ctx: Context) = prefs(ctx).getInt(MICROPHONE_DEVICE, -1)
+    fun setMicrophoneDevice(ctx: Context, id: Int) = prefs(ctx).edit().putInt(MICROPHONE_DEVICE, id).apply()
 
     fun desktopSize(ctx: Context): Triple<Int, Int, Int> = desktopSizeFor(prefs(ctx).getInt(DESKTOP_WIDTH, 1920))
 

@@ -13,6 +13,7 @@ import socket
 import ssl
 import struct
 import threading
+import time
 import logging
 
 from PyQt6.QtCore import QObject, QSettings, pyqtSignal
@@ -27,11 +28,14 @@ FRAME_VIDEO_KEY = 0x01
 FRAME_VIDEO_DELTA = 0x02
 FRAME_AUDIO_CONFIG = 0x10
 FRAME_AUDIO_DATA = 0x11
+FRAME_PC_AUDIO_DATA = 0x12
+FRAME_PHONE_MIC_DATA = 0x13
 
 # Video frame types that bypass Qt signals and go directly to the decoder
 _VIDEO_TYPES = {FRAME_VIDEO_CONFIG, FRAME_VIDEO_KEY, FRAME_VIDEO_DELTA}
 _TYPE_NAMES = {FRAME_VIDEO_CONFIG: "CONFIG", FRAME_VIDEO_KEY: "KEY", FRAME_VIDEO_DELTA: "DELTA",
-               FRAME_AUDIO_CONFIG: "AUDIO_CFG", FRAME_AUDIO_DATA: "AUDIO"}
+               FRAME_AUDIO_CONFIG: "AUDIO_CFG", FRAME_AUDIO_DATA: "AUDIO",
+               FRAME_PC_AUDIO_DATA: "PC_AUDIO", FRAME_PHONE_MIC_DATA: "PHONE_MIC"}
 
 # The phone serves a self-signed certificate. The desktop makes no trust decision about it:
 # the phone's owner decides who may watch, and the answer to the phone's challenge is bound to
@@ -278,6 +282,18 @@ class WebSocketClient(QObject):
                     self._ws.send(json.dumps(command))
                 except Exception as e:
                     log.warning(f"Send failed: {e}")
+
+    def send_audio_frame(self, frame_type: int, payload: bytes):
+        """Send one raw PCM frame to the phone using the shared 9-byte binary header."""
+        if not payload:
+            return
+        frame = struct.pack(">BII", frame_type, int(time.monotonic() * 1000) & 0xffffffff, len(payload)) + payload
+        with self._lock:
+            if self._ws and self._ws.sock and self._ws.sock.connected:
+                try:
+                    self._ws.send(frame, opcode=websocket.ABNF.OPCODE_BINARY)
+                except Exception as e:
+                    log.warning(f"Audio send failed: {e}")
 
     def disconnect(self):
         """Cleanly close the WebSocket connection and stop reconnect loop."""

@@ -3,6 +3,10 @@ package com.remotephone
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Typeface
+import android.Manifest
+import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
@@ -20,6 +24,8 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.Switch
+import android.widget.Spinner
+import android.widget.ArrayAdapter
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,6 +39,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var startButton: Button
     private lateinit var audioToggle: Switch
     private lateinit var audioSubtext: TextView
+    private lateinit var microphoneDevice: Spinner
+    private var microphoneChoices = emptyList<Pair<Int, String>>()
+    private var choosingMicrophone = false
     private lateinit var accessibilityStatus: TextView
     private lateinit var accessibilityButton: Button
     private lateinit var keyboardStatus: TextView
@@ -66,12 +75,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val microphonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) android.widget.Toast.makeText(this, "Microphone permission is needed before sending it to a computer", android.widget.Toast.LENGTH_LONG).show()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         // Tablets, foldables, landscape: two columns, the setup cards on the second
         AdaptiveLayout.mainScreen(this, intArrayOf(
-            R.id.audioToggle, R.id.clipboardCard, R.id.webToggle, R.id.accessibilityButton, R.id.keyboardCard, R.id.settingsButton
+            R.id.audioToggle, R.id.microphoneDevice, R.id.clipboardCard, R.id.webToggle, R.id.accessibilityButton, R.id.keyboardCard, R.id.settingsButton
         ))
 
         // Bind views
@@ -82,6 +95,7 @@ class MainActivity : ComponentActivity() {
         startButton = findViewById(R.id.startButton)
         audioToggle = findViewById(R.id.audioToggle)
         audioSubtext = findViewById(R.id.audioSubtext)
+        microphoneDevice = findViewById(R.id.microphoneDevice)
         accessibilityStatus = findViewById(R.id.accessibilityStatus)
         accessibilityButton = findViewById(R.id.accessibilityButton)
         requestsCard = findViewById(R.id.requestsCard)
@@ -104,6 +118,7 @@ class MainActivity : ComponentActivity() {
         audioToggle.setOnCheckedChangeListener { _, isChecked ->
             ScreenCaptureService.toggleAudio(isChecked)
         }
+        setupMicrophonePicker()
 
         findViewById<Button>(R.id.shareClipboardButton).setOnClickListener {
             val message = when {
@@ -169,6 +184,35 @@ class MainActivity : ComponentActivity() {
         // Request notification permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 100)
+        }
+    }
+
+    private fun setupMicrophonePicker() {
+        val manager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val named = manager.getDevices(AudioManager.GET_DEVICES_INPUTS).map { device ->
+            device.id to when (device.type) {
+                AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Phone microphone"
+                AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired headset microphone"
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth headset microphone"
+                AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_HEADSET -> "USB microphone"
+                else -> device.productName.toString().ifBlank { "Microphone ${device.id}" }
+            }
+        }
+        microphoneChoices = listOf(-1 to "Automatic (recommended)") + named
+        microphoneDevice.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, microphoneChoices.map { it.second })
+        choosingMicrophone = true
+        microphoneDevice.setSelection(microphoneChoices.indexOfFirst { it.first == Prefs.microphoneDevice(this) }.coerceAtLeast(0))
+        choosingMicrophone = false
+        microphoneDevice.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (choosingMicrophone) return
+                Prefs.setMicrophoneDevice(this@MainActivity, microphoneChoices[position].first)
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                }
+                ScreenCaptureService.microphoneDeviceChanged()
+            }
         }
     }
 

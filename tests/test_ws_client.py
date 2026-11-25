@@ -2,12 +2,13 @@
 Run from the repo root:  python -m tests.test_ws_client
 """
 
-import struct
 import threading
+import struct
 
 import websocket
 
 from remotephone.network.ws_client import WebSocketClient
+from remotephone.network.ws_client import FRAME_PC_AUDIO_DATA
 
 c = WebSocketClient()
 closes, errors = [], []
@@ -63,6 +64,18 @@ c.audio_state_changed.connect(audio.append)
 c._handle_text('{"type":"audio","enabled":true}')
 c._handle_text('{"type":"audio","enabled":"false"}')
 assert audio == [True, False]
+
+# PCM transport uses the common binary header and a binary WebSocket opcode.
+class Socket:
+    connected = True
+class FakeWs:
+    sock = Socket()
+    def __init__(self): self.sent = []
+    def send(self, data, opcode=None): self.sent.append((data, opcode))
+c._ws = FakeWs()
+c.send_audio_frame(FRAME_PC_AUDIO_DATA, b"pcm")
+frame, opcode = c._ws.sent.pop()
+assert frame[0] == FRAME_PC_AUDIO_DATA and struct.unpack(">I", frame[5:9])[0] == 3
 
 # so does whether the phone can apply input, read just as strictly
 control = []
