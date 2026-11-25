@@ -546,7 +546,7 @@ class MainWindow(QMainWindow):
         self.audio_btn.setIcon(icon)
         self.audio_btn.setCheckable(True)
         self.audio_btn.setEnabled(False)
-        self.phone_sink_btn = _tool("volume", "Send the selected PC audio input to phone headphones")
+        self.phone_sink_btn = _tool("monitor", "Send the selected PC audio input to phone headphones")
         self.phone_sink_btn.setCheckable(True)
         self.phone_sink_btn.setEnabled(False)
         self.phone_mic_btn = _tool("microphone", "Receive the selected phone microphone")
