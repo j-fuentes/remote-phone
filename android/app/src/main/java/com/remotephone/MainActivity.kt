@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioToggle: Switch
     private lateinit var audioSubtext: TextView
     private lateinit var microphoneDevice: Spinner
+    private lateinit var microphoneCaptureToggle: Switch
     private var microphoneChoices = emptyList<Pair<Int, String>>()
     private var choosingMicrophone = false
     private lateinit var accessibilityStatus: TextView
@@ -76,7 +77,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private val microphonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (!granted) android.widget.Toast.makeText(this, "Microphone permission is needed before sending it to a computer", android.widget.Toast.LENGTH_LONG).show()
+        if (granted) {
+            microphoneCaptureToggle.isChecked = true
+            ScreenCaptureService.toggleMicrophone(true)
+        } else android.widget.Toast.makeText(this, "Microphone permission is needed before sending it to a computer", android.widget.Toast.LENGTH_LONG).show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,7 +88,7 @@ class MainActivity : ComponentActivity() {
         setContentView(R.layout.activity_main)
         // Tablets, foldables, landscape: two columns, the setup cards on the second
         AdaptiveLayout.mainScreen(this, intArrayOf(
-            R.id.audioToggle, R.id.microphoneDevice, R.id.clipboardCard, R.id.webToggle, R.id.accessibilityButton, R.id.keyboardCard, R.id.settingsButton
+            R.id.audioToggle, R.id.microphoneDevice, R.id.microphoneCaptureToggle, R.id.clipboardCard, R.id.webToggle, R.id.accessibilityButton, R.id.keyboardCard, R.id.settingsButton
         ))
 
         // Bind views
@@ -96,6 +100,7 @@ class MainActivity : ComponentActivity() {
         audioToggle = findViewById(R.id.audioToggle)
         audioSubtext = findViewById(R.id.audioSubtext)
         microphoneDevice = findViewById(R.id.microphoneDevice)
+        microphoneCaptureToggle = findViewById(R.id.microphoneCaptureToggle)
         accessibilityStatus = findViewById(R.id.accessibilityStatus)
         accessibilityButton = findViewById(R.id.accessibilityButton)
         requestsCard = findViewById(R.id.requestsCard)
@@ -119,6 +124,16 @@ class MainActivity : ComponentActivity() {
             ScreenCaptureService.toggleAudio(isChecked)
         }
         setupMicrophonePicker()
+        microphoneCaptureToggle.setOnCheckedChangeListener { _, enabled ->
+            if (!enabled) {
+                ScreenCaptureService.toggleMicrophone(false)
+            } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                ScreenCaptureService.toggleMicrophone(true)
+            } else {
+                microphoneCaptureToggle.isChecked = false
+                microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
 
         findViewById<Button>(R.id.shareClipboardButton).setOnClickListener {
             val message = when {
@@ -238,6 +253,17 @@ class MainActivity : ComponentActivity() {
         if (clients != null) showStreaming(clients)
         else if (isStreaming && !ScreenCaptureService.isActive()) showStopped()
         showPhoneScreenCard()
+        microphoneCaptureToggle.isEnabled = ScreenCaptureService.isActive()
+        if (microphoneCaptureToggle.isChecked != ScreenCaptureService.microphoneEnabled()) {
+            microphoneCaptureToggle.setOnCheckedChangeListener(null)
+            microphoneCaptureToggle.isChecked = ScreenCaptureService.microphoneEnabled()
+            microphoneCaptureToggle.setOnCheckedChangeListener { _, enabled ->
+                if (enabled && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    microphoneCaptureToggle.isChecked = false
+                    microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                } else ScreenCaptureService.toggleMicrophone(enabled)
+            }
+        }
     }
 
     /** Desktop mode streaming: the phone's own screen can go dark while the desktop keeps running. */

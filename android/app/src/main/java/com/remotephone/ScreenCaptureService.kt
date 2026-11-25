@@ -76,6 +76,7 @@ class ScreenCaptureService : Service() {
         }
         fun togglePcAudio(enabled: Boolean) { instance?.setPcAudioEnabled(enabled) }
         fun toggleMicrophone(enabled: Boolean) { instance?.setMicrophoneEnabled(enabled) }
+        fun microphoneEnabled(): Boolean = instance?.microphoneEnabled == true
         fun microphoneDeviceChanged() { instance?.restartMicrophoneIfNeeded() }
 
         /** Shares the current text clipboard with connected, authorized clients. */
