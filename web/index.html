@@ -29,13 +29,16 @@
   svg.i { width:24px; height:24px; fill:currentColor; flex:none; display:block; }
 
   /* ---- Top app bar ---- */
-  .top-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:8px 12px;
+  .top-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-height:64px; padding:8px 12px;
     padding-top:max(8px, env(safe-area-inset-top)); padding-left:max(12px, env(safe-area-inset-left)); padding-right:max(12px, env(safe-area-inset-right));
-    background:var(--surface-container); position:relative; z-index:3; }
-  .brand { display:flex; align-items:center; gap:8px; font-size:18px; font-weight:500; margin-right:4px; white-space:nowrap; }
+    background:color-mix(in srgb, var(--surface-container) 94%, var(--primary)); border-bottom:1px solid var(--outline-variant);
+    box-shadow:0 1px 2px #00000033; position:relative; z-index:3; }
+  .brand { display:flex; align-items:center; gap:8px; font-size:18px; font-weight:600; letter-spacing:0; margin:0 8px 0 2px; white-space:nowrap; }
   .brand svg { color:var(--primary); }
-  .grow { flex:1; }
-  .group { display:flex; align-items:center; gap:4px; }
+  .connection-surface { display:flex; align-items:center; gap:6px; min-width:0; padding:4px 6px 4px 10px; border:1px solid var(--outline-variant);
+    border-radius:24px; background:var(--surface-high); box-shadow:inset 0 1px #ffffff08; }
+  .top-bar-spacer { flex:1 1 12px; min-width:12px; }
+  .top-actions, .group { display:flex; align-items:center; gap:2px; }
 
   /* Outlined text field with floating label */
   .field { position:relative; display:block; }
@@ -45,7 +48,7 @@
   .field input:focus { border:2px solid var(--primary); padding:0 11px; }
   .field input:disabled { opacity:.6; }
   .field span { position:absolute; left:9px; top:10px; padding:0 4px; color:var(--on-surface-variant); pointer-events:none;
-    background:var(--surface-container); transition:all .15s var(--ease); font-size:15px; line-height:20px; }
+    background:var(--surface-high); transition:all .15s var(--ease); font-size:15px; line-height:20px; }
   .field input:focus + span, .field input:not(:placeholder-shown) + span { top:-9px; font-size:12px; line-height:16px; }
   .field input:focus + span { color:var(--primary); }
   #hostField { width:180px; } #portField { width:84px; }
@@ -85,8 +88,8 @@
   .switch:has(input:checked) svg { color:var(--primary); }
 
   /* Status chip */
-  #status { display:inline-flex; align-items:center; gap:8px; height:32px; padding:0 12px 0 10px; border-radius:8px;
-    border:1px solid var(--outline-variant); color:var(--on-surface-variant); font-size:13px; font-weight:500;
+  #status { display:inline-flex; align-items:center; gap:8px; height:36px; padding:0 12px 0 10px; border-radius:18px;
+    background:var(--surface-high); border:1px solid var(--outline-variant); color:var(--on-surface-variant); font-size:13px; font-weight:500;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:min(42vw, 420px); }
   #status::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--outline); flex:none; }
   #status.ok { color:var(--on-surface); } #status.ok::before { background:var(--success); box-shadow:0 0 0 3px #7ddb9e33; }
@@ -152,9 +155,12 @@
 
   @media (max-width: 640px) {
     .brand span { display:none; }
+    .brand { margin-right:0; }
+    .connection-surface { flex:1 1 0; padding-left:8px; }
     #hostField { flex:1; width:auto; min-width:110px; }
-    .top-bar .grow { display:none; }
+    .top-bar-spacer { display:none; }
     #status { flex:1 1 0; min-width:0; max-width:none; }
+    .top-actions { margin-left:auto; }
     .nav-bar { gap:0; padding-left:4px; padding-right:4px; }
     .nav-bar .icon-btn { width:44px; }
     .nav-bar .sep { margin:0 2px; }
@@ -211,7 +217,7 @@
     .top-bar { flex-wrap:nowrap; padding-top:max(6px, env(safe-area-inset-top)); padding-bottom:6px; }
     .brand span { display:none; }
     #hostField { flex:1 1 120px; width:auto; min-width:100px; }
-    .top-bar .grow { display:none; }
+    .top-bar-spacer { display:none; }
     #status { flex:1 1 0; min-width:0; }
     #hint > div { padding:16px 20px; }
   }
@@ -235,7 +241,7 @@
       grid-template-rows:auto minmax(0,1fr); grid-template-areas:"stage hinge top" "stage hinge nav"; }
     body.bars-hidden { grid-template-columns:minmax(0,1fr) 0 0; }
     .top-bar { flex-wrap:wrap; }
-    .top-bar .grow { display:none; }
+    .top-bar-spacer { display:none; }
     #hostField { flex:1 1 140px; width:auto; }
     #status { flex:1 1 100%; max-width:none; order:5; }
     #showBars { right:max(10px, env(safe-area-inset-right)); }
@@ -283,13 +289,16 @@
 
 <header class="top-bar">
   <div class="brand"><svg class="i"><use href="#i-phone"/></svg><span>RemotePhone</span></div>
-  <label class="field" id="hostField"><input id="host" placeholder=" " autocomplete="off" spellcheck="false"><span>Phone IP</span></label>
-  <label class="field" id="portField"><input id="port" value="8765" placeholder=" " inputmode="numeric"><span>Port</span></label>
-  <button id="connect" class="icon-btn filled" aria-label="Connect" data-tip="Connect"><svg class="i"><use href="#i-link"/></svg></button>
-  <label class="switch" title="Stream phone audio (Android 10+)"><svg class="i"><use href="#i-volume"/></svg><input type="checkbox" role="switch" id="audio" aria-label="Audio" disabled></label>
-  <span class="grow"></span>
+  <div class="connection-surface" aria-label="Phone connection">
+    <label class="field" id="hostField"><input id="host" placeholder=" " autocomplete="off" spellcheck="false"><span>Phone IP</span></label>
+    <label class="field" id="portField"><input id="port" value="8765" placeholder=" " inputmode="numeric"><span>Port</span></label>
+    <button id="connect" class="icon-btn filled" aria-label="Connect" data-tip="Connect"><svg class="i"><use href="#i-link"/></svg></button>
+    <label class="switch" title="Stream phone audio (Android 10+)"><svg class="i"><use href="#i-volume"/></svg><input type="checkbox" role="switch" id="audio" aria-label="Audio" disabled></label>
+  </div>
+  <span class="top-bar-spacer"></span>
   <span id="status">Disconnected</span>
-  <div class="group">
+  <div class="top-actions">
+    <div class="group">
     <details class="menu" id="fpMenu">
       <summary class="icon-btn" aria-label="Certificate fingerprint" data-tip="Certificate fingerprint"><svg class="i"><use href="#i-key"/></svg></summary>
       <div class="menu-panel">
@@ -301,6 +310,7 @@
     </details>
     <button id="install" class="icon-btn" aria-label="Install as an app" data-tip="Install as an app" hidden><svg class="i"><use href="#i-install"/></svg></button>
     <button id="hideBars" class="icon-btn" aria-label="Hide bars (F9)" data-tip="Hide bars (F9)"><svg class="i"><use href="#i-hide-bars"/></svg></button>
+    </div>
   </div>
 </header>
 <main id="stage" tabindex="0">
