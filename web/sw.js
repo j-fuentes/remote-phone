@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const CACHE = 'remotephone-v5';
+const CACHE = 'remotephone-v6';
 const ASSETS = [
   'index.html',
   'remotephone.js',

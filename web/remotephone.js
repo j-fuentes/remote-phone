@@ -14,11 +14,12 @@ const FRAME_VIDEO_KEY = 0x01;
 const FRAME_VIDEO_DELTA = 0x02;
 const FRAME_AUDIO_CONFIG = 0x10;
 const FRAME_AUDIO_DATA = 0x11;
+const FRAME_PC_AUDIO_DATA = 0x12;
 
 const $ = (id) => document.getElementById(id);
 const ui = {
   host: $('host'), port: $('port'), fingerprint: $('fingerprint'), fpmsg: $('fpmsg'), connect: $('connect'),
-  audio: $('audio'), status: $('status'), stage: $('stage'), canvas: $('screen'), hint: $('hint'),
+  audio: $('audio'), pcAudio: $('pcAudio'), status: $('status'), stage: $('stage'), canvas: $('screen'), hint: $('hint'),
   fullscreen: $('fullscreen'),
 };
 
@@ -455,6 +456,92 @@ class AudioPipeline {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Shared browser audio -> phone. Browsers deliberately require a picker here: the user selects a
+// tab/window/screen and explicitly enables its audio. The selected audio is converted to the fixed
+// 44.1 kHz stereo PCM format understood by the Android AudioTrack.
+// ---------------------------------------------------------------------------------------------
+
+class BrowserAudioSender {
+  constructor(connection, onState) {
+    this.connection = connection;
+    this.onState = onState;
+    this.stream = null;
+    this.ctx = null;
+    this.source = null;
+    this.processor = null;
+    this.silentGain = null;
+  }
+
+  get active() { return !!this.stream; }
+
+  async start() {
+    if (this.active) return;
+    if (!navigator.mediaDevices?.getDisplayMedia) throw new Error('This browser cannot share audio');
+    // video:true is required by Chromium's picker even though RemotePhone consumes audio only.
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: { suppressLocalAudioPlayback: false },
+      systemAudio: 'include',
+      selfBrowserSurface: 'exclude',
+    });
+    const audioTrack = stream.getAudioTracks()[0];
+    if (!audioTrack) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error('No audio was shared. Choose a source and enable Share audio.');
+    }
+    this.stream = stream;
+    audioTrack.addEventListener('ended', () => this.stop());
+
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new Ctx({ latencyHint: 'interactive' });
+    await this.ctx.resume();
+    this.source = this.ctx.createMediaStreamSource(stream);
+    // ScriptProcessor has wide browser support. The gain node keeps the graph alive without
+    // duplicating shared sound through this computer's speakers.
+    this.processor = this.ctx.createScriptProcessor(4096, 2, 2);
+    this.silentGain = this.ctx.createGain();
+    this.silentGain.gain.value = 0;
+    this.processor.onaudioprocess = (event) => this.sendPcm(event.inputBuffer);
+    this.source.connect(this.processor);
+    this.processor.connect(this.silentGain);
+    this.silentGain.connect(this.ctx.destination);
+    this.connection.sendCommand({ type: 'toggle_pc_audio', enabled: true });
+    this.onState(true);
+  }
+
+  sendPcm(input) {
+    if (!this.active || !this.connection.granted) return;
+    const frames = input.length;
+    const targetRate = 44100;
+    const outFrames = Math.max(1, Math.floor(frames * targetRate / input.sampleRate));
+    const left = input.getChannelData(0);
+    const right = input.numberOfChannels > 1 ? input.getChannelData(1) : left;
+    const pcm = new Int16Array(outFrames * 2);
+    const ratio = input.sampleRate / targetRate;
+    for (let i = 0; i < outFrames; i++) {
+      const source = Math.min(frames - 1, Math.floor(i * ratio));
+      pcm[i * 2] = Math.max(-1, Math.min(1, left[source])) * 0x7fff;
+      pcm[i * 2 + 1] = Math.max(-1, Math.min(1, right[source])) * 0x7fff;
+    }
+    this.connection.sendBinaryFrame(FRAME_PC_AUDIO_DATA, new Uint8Array(pcm.buffer));
+  }
+
+  stop() {
+    const stream = this.stream;
+    const wasActive = !!stream;
+    this.stream = null;
+    stream?.getTracks().forEach((track) => track.stop());
+    this.processor?.disconnect(); this.source?.disconnect(); this.silentGain?.disconnect();
+    this.processor = this.source = this.silentGain = null;
+    this.ctx?.close(); this.ctx = null;
+    if (wasActive) {
+      this.connection.sendCommand({ type: 'toggle_pc_audio', enabled: false });
+      this.onState(false);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Input: pointer / wheel / keyboard -> phone JSON commands (ported from input_handler.py)
 // ---------------------------------------------------------------------------------------------
 
@@ -744,6 +831,11 @@ class PhoneConnection {
     this.info = null;
     this.video = pickVideoPipeline();
     this.audio = new AudioPipeline();
+    this.pcAudio = new BrowserAudioSender(this, (enabled) => {
+      ui.pcAudio.setAttribute('aria-pressed', String(enabled));
+      setIconButton(ui.pcAudio, 'volume', enabled ? 'Stop sending shared audio' : 'Send shared audio to phone');
+      updateButtons();
+    });
     this.input = new InputMapper(ui.canvas, (cmd) => this.sendCommand(cmd));
   }
 
@@ -939,6 +1031,7 @@ class PhoneConnection {
   }
 
   onDisconnected() {
+    this.pcAudio.stop();
     this.granted = false;
     document.body.classList.remove('phone-screen-control');
     document.body.classList.remove('has-picture');
@@ -954,6 +1047,17 @@ class PhoneConnection {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && (this.granted || cmd.type === 'auth')) {
       this.ws.send(JSON.stringify(cmd));
     }
+  }
+
+  sendBinaryFrame(type, payload) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.granted) return;
+    const frame = new Uint8Array(9 + payload.length);
+    const view = new DataView(frame.buffer);
+    frame[0] = type;
+    view.setUint32(1, Date.now() >>> 0, false);
+    view.setUint32(5, payload.length, false);
+    frame.set(payload, 9);
+    this.ws.send(frame.buffer);
   }
 }
 
@@ -1005,6 +1109,7 @@ function updateButtons() {
   ui.connect.classList.toggle('filled', !active);
   ui.connect.classList.toggle('danger', active);
   ui.host.disabled = ui.port.disabled = active;
+  ui.pcAudio.disabled = !conn.granted && !conn.pcAudio.active;
   for (const b of document.querySelectorAll('footer button[data-key]')) b.disabled = !conn.granted;
 }
 
@@ -1040,6 +1145,16 @@ ui.audio.addEventListener('change', () => {
   // Starting the AudioContext inside this click satisfies the browser autoplay policy
   if (ui.audio.checked) conn.audio.start(); else conn.audio.stop();
   conn.sendCommand({ type: 'toggle_audio', enabled: ui.audio.checked });
+});
+
+ui.pcAudio.addEventListener('click', async () => {
+  if (conn.pcAudio.active) { conn.pcAudio.stop(); return; }
+  try {
+    await conn.pcAudio.start();
+    setStatus('Sending shared browser audio to the phone', 'ok');
+  } catch (error) {
+    setStatus((error && error.message) || 'Could not share browser audio', 'err');
+  }
 });
 
 for (const b of document.querySelectorAll('footer button[data-key]')) {
