@@ -222,7 +222,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun onMicrophoneCaptureChanged(_: android.widget.CompoundButton, enabled: Boolean) {
+    private fun onMicrophoneCaptureChanged(button: android.widget.CompoundButton, enabled: Boolean) {
         if (!enabled) {
             ScreenCaptureService.toggleMicrophone(false)
         } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
