@@ -39,6 +39,10 @@
     border-radius:24px; background:var(--surface-high); box-shadow:inset 0 1px #ffffff08; }
   .top-bar-spacer { flex:1 1 12px; min-width:12px; }
   .top-actions, .group { display:flex; align-items:center; gap:2px; }
+  .mic-monitor { display:flex; align-items:center; gap:2px; }
+  .mic-volume { display:none; align-items:center; width:74px; height:40px; padding:0 6px; }
+  #phoneMic[aria-pressed="true"] + .mic-volume { display:inline-flex; }
+  .mic-volume input { width:100%; accent-color:var(--primary); }
 
   /* Outlined text field with floating label */
   .field { position:relative; display:block; }
@@ -161,6 +165,7 @@
     .top-bar-spacer { display:none; }
     #status { flex:1 1 0; min-width:0; max-width:none; }
     .top-actions { margin-left:auto; }
+    .mic-volume { width:58px; }
     .nav-bar { gap:0; padding-left:4px; padding-right:4px; }
     .nav-bar .icon-btn { width:44px; }
     .nav-bar .sep { margin:0 2px; }
@@ -271,6 +276,8 @@
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></symbol>
   <symbol id="i-link-off" viewBox="0 0 24 24"><path d="M17 7h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1 0 1.43-.98 2.63-2.31 2.98l1.46 1.46C20.88 15.61 22 13.95 22 12c0-2.76-2.24-5-5-5zm-1 4h-2.19l2 2H16zM2 4.27l3.11 3.11C3.29 8.12 2 9.91 2 12c0 2.76 2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1 0-1.59 1.21-2.9 2.76-3.07L8.73 11H8v2h2.73L13 15.27V17h1.73l4.01 4L20 19.74 3.27 3 2 4.27z"/></symbol>
   <symbol id="i-volume" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21H8v2h8v-2h-3v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 24 24"><path d="m19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23C18.67 13.3 19 12.18 19 11zM4.27 3 3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3h.72l1.8 1.8c-.77.32-1.62.49-2.53.49-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21H8v2h8v-2h-3v-3.28c.98-.14 1.88-.51 2.65-1.02L19.73 20 21 18.73 4.27 3zM12 2c-1.66 0-3 1.34-3 3v.73l6 6V5c0-1.66-1.34-3-3-3z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></symbol>
   <symbol id="i-install" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></symbol>
   <symbol id="i-hide-bars" viewBox="0 0 24 24"><path d="M21 11V3h-8l3.29 3.29-10 10L3 13v8h8l-3.29-3.29 10-10z"/></symbol>
@@ -299,6 +306,10 @@
   <span id="status">Disconnected</span>
   <div class="top-actions">
     <button id="pcAudio" class="icon-btn" aria-label="Send shared audio to phone" data-tip="Send shared audio to phone" aria-pressed="false" disabled><svg class="i"><use href="#i-volume"/></svg></button>
+    <div class="mic-monitor">
+      <button id="phoneMic" class="icon-btn" aria-label="Listen to phone microphone" data-tip="Listen to phone microphone" aria-pressed="false" disabled><svg class="i"><use href="#i-mic-off"/></svg></button>
+      <label class="mic-volume" for="phoneMicVolume" title="Phone microphone volume"><input id="phoneMicVolume" type="range" min="0" max="200" value="100" aria-label="Phone microphone volume"></label>
+    </div>
     <div class="group">
     <details class="menu" id="fpMenu">
       <summary class="icon-btn" aria-label="Certificate fingerprint" data-tip="Certificate fingerprint"><svg class="i"><use href="#i-key"/></svg></summary>

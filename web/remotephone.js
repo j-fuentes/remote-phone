@@ -15,11 +15,13 @@ const FRAME_VIDEO_DELTA = 0x02;
 const FRAME_AUDIO_CONFIG = 0x10;
 const FRAME_AUDIO_DATA = 0x11;
 const FRAME_PC_AUDIO_DATA = 0x12;
+const FRAME_PHONE_MIC_DATA = 0x13;
 
 const $ = (id) => document.getElementById(id);
 const ui = {
   host: $('host'), port: $('port'), fingerprint: $('fingerprint'), fpmsg: $('fpmsg'), connect: $('connect'),
-  audio: $('audio'), pcAudio: $('pcAudio'), status: $('status'), stage: $('stage'), canvas: $('screen'), hint: $('hint'),
+  audio: $('audio'), pcAudio: $('pcAudio'), phoneMic: $('phoneMic'), phoneMicVolume: $('phoneMicVolume'),
+  status: $('status'), stage: $('stage'), canvas: $('screen'), hint: $('hint'),
   fullscreen: $('fullscreen'),
 };
 
@@ -418,35 +420,46 @@ class MsePipeline {
 // ---------------------------------------------------------------------------------------------
 
 class AudioPipeline {
-  constructor() { this.ctx = null; this.playhead = 0; }
+  constructor(channels = 2) { this.channels = channels; this.ctx = null; this.gain = null; this.playhead = 0; this.volume = 1; }
 
   start() {
     if (this.ctx) return;
     const Ctx = window.AudioContext || window.webkitAudioContext;
     this.ctx = new Ctx({ sampleRate: 44100, latencyHint: 'interactive' });
+    this.gain = this.ctx.createGain();
+    this.gain.gain.value = this.volume;
+    this.gain.connect(this.ctx.destination);
     this.ctx.resume();
     this.playhead = 0;
   }
 
   stop() {
+    this.gain?.disconnect(); this.gain = null;
     if (this.ctx) { this.ctx.close(); this.ctx = null; }
+  }
+
+  setVolume(volume) {
+    this.volume = Math.max(0, Math.min(2, volume));
+    if (this.gain) this.gain.gain.value = this.volume;
   }
 
   feed(payload) {
     const ctx = this.ctx;
     if (!ctx) return;
-    const frames = payload.length >> 2;
+    const bytesPerFrame = this.channels * 2;
+    const frames = Math.floor(payload.length / bytesPerFrame);
     if (!frames) return;
-    const buf = ctx.createBuffer(2, frames, 44100);
-    const left = buf.getChannelData(0), right = buf.getChannelData(1);
-    const dv = new DataView(payload.buffer, payload.byteOffset, frames * 4);
+    const buf = ctx.createBuffer(this.channels, frames, 44100);
+    const channels = Array.from({ length: this.channels }, (_, channel) => buf.getChannelData(channel));
+    const dv = new DataView(payload.buffer, payload.byteOffset, frames * bytesPerFrame);
     for (let i = 0; i < frames; i++) {
-      left[i] = dv.getInt16(i * 4, true) / 32768;
-      right[i] = dv.getInt16(i * 4 + 2, true) / 32768;
+      for (let channel = 0; channel < this.channels; channel++) {
+        channels[channel][i] = dv.getInt16((i * this.channels + channel) * 2, true) / 32768;
+      }
     }
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    src.connect(ctx.destination);
+    src.connect(this.gain);
     const now = ctx.currentTime;
     // Underrun or too much latency built up: resync with a small jitter cushion
     if (this.playhead < now || this.playhead - now > 0.35) this.playhead = now + 0.08;
@@ -829,8 +842,10 @@ class PhoneConnection {
     this.key = '';
     this.host = ''; this.port = '';
     this.info = null;
+    this.microphoneAvailable = false;
     this.video = pickVideoPipeline();
     this.audio = new AudioPipeline();
+    this.phoneMic = new AudioPipeline(1);
     this.pcAudio = new BrowserAudioSender(this, (enabled) => {
       ui.pcAudio.setAttribute('aria-pressed', String(enabled));
       setIconButton(ui.pcAudio, 'volume', enabled ? 'Stop sending shared audio' : 'Send shared audio to phone');
@@ -920,6 +935,8 @@ class PhoneConnection {
       if (type === FRAME_VIDEO_KEY) document.body.classList.add('has-picture');
     } else if (type === FRAME_AUDIO_DATA) {
       this.audio.feed(payload);
+    } else if (type === FRAME_PHONE_MIC_DATA) {
+      this.phoneMic.feed(payload);
     } else if (type === FRAME_AUDIO_CONFIG) {
       // 44.1 kHz stereo s16le, fixed by the phone side
     }
@@ -937,6 +954,8 @@ class PhoneConnection {
         showPhoneScreen(msg);
         if (this.video.setScreenSize) this.video.setScreenSize(msg.screenWidth, msg.screenHeight);
         ui.audio.disabled = !msg.audioAvailable;
+        this.microphoneAvailable = msg.microphoneAvailable === true;
+        updateButtons();
         if (!this.granted) setStatus('Connected to ' + (msg.device || 'phone') + ' — waiting for approval…');
         break;
       case 'approval':
@@ -974,6 +993,10 @@ class PhoneConnection {
             () => setStatus('Copied to clipboard (' + msg.content.length + ' chars)', 'ok'),
             () => setStatus('Phone clipboard received, but the browser refused clipboard access', 'err'));
         }
+        break;
+      case 'microphone':
+        if (msg.enabled) this.phoneMic.start(); else this.phoneMic.stop();
+        setPhoneMicEnabled(msg.enabled === true);
         break;
       case 'error':
         setStatus(msg.message || 'Unknown error', 'err');
@@ -1040,6 +1063,9 @@ class PhoneConnection {
     ui.audio.disabled = true;
     ui.audio.checked = false;
     this.audio.stop();
+    this.phoneMic.stop();
+    setPhoneMicEnabled(false);
+    this.microphoneAvailable = false;
     updateButtons();
   }
 
@@ -1110,7 +1136,13 @@ function updateButtons() {
   ui.connect.classList.toggle('danger', active);
   ui.host.disabled = ui.port.disabled = active;
   ui.pcAudio.disabled = !conn.granted && !conn.pcAudio.active;
+  ui.phoneMic.disabled = !conn.granted || !conn.microphoneAvailable;
   for (const b of document.querySelectorAll('footer button[data-key]')) b.disabled = !conn.granted;
+}
+
+function setPhoneMicEnabled(enabled) {
+  ui.phoneMic.setAttribute('aria-pressed', String(enabled));
+  setIconButton(ui.phoneMic, enabled ? 'mic' : 'mic-off', enabled ? 'Mute phone microphone' : 'Listen to phone microphone');
 }
 
 ui.connect.addEventListener('click', () => {
@@ -1155,6 +1187,19 @@ ui.pcAudio.addEventListener('click', async () => {
   } catch (error) {
     setStatus((error && error.message) || 'Could not share browser audio', 'err');
   }
+});
+
+ui.phoneMic.addEventListener('click', () => {
+  const enabled = ui.phoneMic.getAttribute('aria-pressed') !== 'true';
+  // Create/resume the AudioContext in the click itself: browsers otherwise reject later playback
+  // when the phone acknowledges the request asynchronously.
+  if (enabled) conn.phoneMic.start(); else conn.phoneMic.stop();
+  setPhoneMicEnabled(enabled);
+  conn.sendCommand({ type: 'toggle_microphone', enabled });
+  setStatus(enabled ? 'Starting phone microphone…' : 'Muting phone microphone…');
+});
+ui.phoneMicVolume.addEventListener('input', () => {
+  conn.phoneMic.setVolume(Number(ui.phoneMicVolume.value) / 100);
 });
 
 for (const b of document.querySelectorAll('footer button[data-key]')) {
