@@ -62,11 +62,13 @@ function fingerprintState(raw) {
   return { state: fp.length === 64 ? 'ok' : 'invalid', fp };
 }
 
-// Red border and a line under the box while the value cannot be used
+// Error outline and a line under the box while the value cannot be used; the key button in the
+// top bar gets a red badge too, since the box lives in a menu that is usually closed
 function showFingerprintState() {
   const { state } = fingerprintState(ui.fingerprint.value);
   const invalid = state === 'invalid';
-  ui.fingerprint.classList.toggle('invalid', invalid);
+  ui.fingerprint.closest('.field').classList.toggle('invalid', invalid);
+  ui.fingerprint.closest('details')?.classList.toggle('invalid', invalid);
   ui.fpmsg.style.display = invalid ? 'block' : 'none';
   ui.fpmsg.textContent = invalid
     ? 'A SHA-256 fingerprint is 64 hex characters. Fix it, or clear the box to connect without one.'
@@ -112,11 +114,10 @@ function avcCodecString(config) {
 }
 
 class VideoPipeline {
-  constructor(canvas, onSize, onUnsupported) {
+  constructor(canvas, onSize) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     this.onSize = onSize;
-    this.onUnsupported = onUnsupported;
     this.decoder = null;
     this.config = null;
     this.codec = null;
@@ -143,28 +144,14 @@ class VideoPipeline {
     this.decoder = new VideoDecoder({
       output: (frame) => this.present(frame),
       error: (e) => {
+        console.warn('VideoDecoder error, will recreate at next keyframe:', e);
         this.decoder = null;
         this.needKey = true;
-        if (e.name === 'NotSupportedError') this.onUnsupported(e);
-        else console.warn('VideoDecoder error, will recreate at next keyframe:', e);
       },
     });
-    this.configure();
+    // No "description" => the decoder expects Annex-B, exactly what MediaCodec emits.
+    this.decoder.configure({ codec: this.codec, optimizeForLatency: true });
     this.needKey = true;
-  }
-
-  /** False when this browser cannot decode the stream; the connection then switches to MSE. */
-  configure() {
-    try {
-      // No "description" => the decoder expects Annex-B, exactly what MediaCodec emits.
-      this.decoder.configure({ codec: this.codec, optimizeForLatency: true });
-      return true;
-    } catch (e) {
-      try { this.decoder.close(); } catch { /* ignore */ }
-      this.decoder = null;
-      this.onUnsupported(e);
-      return false;
-    }
   }
 
   feed(type, payload) {
@@ -176,18 +163,16 @@ class VideoPipeline {
       return;
     }
     if (!this.config) return;
-    const isKey = type === FRAME_VIDEO_KEY;
     if (!this.decoder || this.decoder.state === 'closed') {
-      if (!isKey) return;
+      if (type !== FRAME_VIDEO_KEY) return;
       this.createDecoder();
-      if (!this.decoder) return;
-    } else if (isKey && this.decoder.decodeQueueSize > 4) {
-      // Falling behind: a keyframe decodes on its own, so drop the backlog here rather than
-      // dropping deltas, which would freeze the picture until the next keyframe
-      this.decoder.reset();
-      if (!this.configure()) return;
     }
-    if (!isKey && this.needKey) return;
+    const isKey = type === FRAME_VIDEO_KEY;
+    if (!isKey) {
+      if (this.needKey) return;
+      // Decoder falling behind: drop deltas until the next keyframe (one per second)
+      if (this.decoder.decodeQueueSize > 4) { this.needKey = true; return; }
+    }
     const data = isKey ? concatBytes(this.config, payload) : payload;
     this.ts += 16_667;
     try {
@@ -341,18 +326,11 @@ class MsePipeline {
     this.config = null; this.sps = null; this.pps = null;
     this.ms = null; this.sb = null; this.queue = []; this.started = false;
     this.seq = 1; this.time = 0;
-    this.detach();
+    this.video.removeAttribute('src');
     try { this.video.load(); } catch { /* ignore */ }
   }
 
-  detach() {
-    if (this.video.src.startsWith('blob:')) URL.revokeObjectURL(this.video.src);
-    this.video.removeAttribute('src');
-    this.video.srcObject = null;
-  }
-
   openSource() {
-    this.detach();
     const ms = new this.MS();
     this.ms = ms; this.sb = null; this.queue = []; this.started = false; this.seq = 1; this.time = 0;
     if (window.ManagedMediaSource && ms instanceof window.ManagedMediaSource) this.video.srcObject = ms;
@@ -421,8 +399,7 @@ class MsePipeline {
     // Live edge: never let playback lag more than a few frames behind what arrived
     if (end - v.currentTime > 0.25 || v.currentTime < v.buffered.start(0)) v.currentTime = Math.max(v.buffered.start(0), end - 0.03);
     if (v.paused) v.play().catch(() => {});
-    // Trim old data once more than 10 s of it has piled up, not on every frame
-    if (this.sb && !this.sb.updating && v.buffered.start(0) < v.currentTime - 10) {
+    if (this.sb && !this.sb.updating && v.currentTime > 10) {
       try { this.sb.remove(0, v.currentTime - 5); } catch { /* ignore */ }
     }
     if (v.readyState < 2 || !v.videoWidth) return;
@@ -446,7 +423,7 @@ class AudioPipeline {
     if (this.ctx) return;
     const Ctx = window.AudioContext || window.webkitAudioContext;
     this.ctx = new Ctx({ sampleRate: 44100, latencyHint: 'interactive' });
-    this.ctx.resume().catch(() => {});  // rejects if stop() closes a context the browser kept suspended
+    this.ctx.resume();
     this.playhead = 0;
   }
 
@@ -496,23 +473,145 @@ const KEY_COMMANDS = {
 };
 const CTRL_COMMANDS = { a: 'select_all', c: 'copy', x: 'cut' }; // v is handled through the paste event
 
+
+// ---------------------------------------------------------------------------------------------
+// Desktop mode (info.desktop): the phone streams a separate desktop display (Samsung DeX /
+// Android desktop) and injects real mouse and keyboard events there, so the browser sends
+// pointer buttons, hover, wheel and Android keycodes instead of touch gestures.
+// ---------------------------------------------------------------------------------------------
+
+// KeyboardEvent.code -> android.view.KeyEvent keycode
+const ANDROID_KEYCODES = (() => {
+  const m = {
+    Enter: 66, NumpadEnter: 160, Escape: 111, Backspace: 67, Tab: 61, Space: 62, Delete: 112, Insert: 124,
+    Home: 122, End: 123, PageUp: 92, PageDown: 93, ArrowLeft: 21, ArrowRight: 22, ArrowUp: 19, ArrowDown: 20,
+    Minus: 69, Equal: 70, BracketLeft: 71, BracketRight: 72, Backslash: 73, Semicolon: 74, Quote: 75,
+    Backquote: 68, Comma: 55, Period: 56, Slash: 76, IntlBackslash: 73, CapsLock: 115, NumLock: 143, ScrollLock: 116,
+    PrintScreen: 120, Pause: 121, ContextMenu: 82,
+    ShiftLeft: 59, ShiftRight: 60, ControlLeft: 113, ControlRight: 114, AltLeft: 57, AltRight: 58, MetaLeft: 117, MetaRight: 118,
+    NumpadDivide: 154, NumpadMultiply: 155, NumpadSubtract: 156, NumpadAdd: 157, NumpadDecimal: 158, Numpad0: 144,
+  };
+  for (let i = 0; i < 26; i++) m['Key' + String.fromCharCode(65 + i)] = 29 + i;
+  for (let i = 0; i < 10; i++) m['Digit' + i] = 7 + i;
+  for (let i = 1; i <= 9; i++) m['Numpad' + i] = 144 + i;
+  for (let i = 1; i <= 12; i++) m['F' + i] = 130 + i;
+  return m;
+})();
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const META = { SHIFT: 0x41, ALT: 0x12, CTRL: 0x3000, META: 0x30000 }; // *_ON | *_LEFT_ON
+
+function androidMeta(e) {
+  let m = 0;
+  if (e.shiftKey) m |= META.SHIFT;
+  if (e.altKey) m |= META.ALT;
+  // On a Mac, Cmd acts as Ctrl so Cmd+C / Cmd+Z / Cmd+A do what Mac users expect
+  if (e.ctrlKey || (IS_MAC && e.metaKey)) m |= META.CTRL;
+  if (e.metaKey && !IS_MAC) m |= META.META;
+  return m;
+}
+
+/** Browser MouseEvent.button -> Android MotionEvent.BUTTON_* (buttons bitmasks already match). */
+const ANDROID_BUTTON = { 0: 1, 1: 4, 2: 2, 3: 8, 4: 16 };
+
+const DesktopInput = {
+  pendingMove: null,
+  wheelH: 0, wheelV: 0, wheelPos: null,
+  rafScheduled: false,
+  downKeys: new Set(),
+
+  schedule(mapper) {
+    if (this.rafScheduled) return;
+    this.rafScheduled = true;
+    requestAnimationFrame(() => this.flush(mapper));
+  },
+
+  flush(mapper) {
+    this.rafScheduled = false;
+    if (this.pendingMove) { mapper.send(this.pendingMove); this.pendingMove = null; }
+    if (this.wheelH || this.wheelV) {
+      const c = (v) => Math.round(Math.max(-10, Math.min(10, v)) * 100) / 100;
+      mapper.send({ type: 'wheel', x: this.wheelPos.x, y: this.wheelPos.y, h: c(this.wheelH), v: c(this.wheelV) });
+      this.wheelH = this.wheelV = 0;
+    }
+  },
+
+  pos(mapper, e) {
+    const p = mapper.toPhone(e);
+    return { x: Math.round(p.x), y: Math.round(p.y) };
+  },
+
+  down(mapper, e) {
+    e.preventDefault();
+    mapper.canvas.setPointerCapture(e.pointerId);
+    this.flush(mapper);
+    const p = this.pos(mapper, e);
+    mapper.send({ type: 'mouse', action: 'down', x: p.x, y: p.y, buttons: e.buttons || 1, button: ANDROID_BUTTON[e.button] || 1 });
+  },
+
+  move(mapper, e) {
+    const p = this.pos(mapper, e);
+    this.pendingMove = { type: 'mouse', action: 'move', x: p.x, y: p.y, buttons: e.buttons };
+    this.schedule(mapper);
+  },
+
+  up(mapper, e) {
+    this.flush(mapper);
+    const p = this.pos(mapper, e);
+    mapper.send({ type: 'mouse', action: 'up', x: p.x, y: p.y, buttons: e.buttons, button: ANDROID_BUTTON[e.button] || 1 });
+  },
+
+  wheel(mapper, e) {
+    e.preventDefault();
+    // ~100 px per wheel notch; Android VSCROLL > 0 scrolls up, HSCROLL > 0 scrolls right
+    const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
+    this.wheelH += (e.deltaX * unit) / 100;
+    this.wheelV += (-e.deltaY * unit) / 100;
+    this.wheelPos = this.pos(mapper, e);
+    this.schedule(mapper);
+  },
+
+  key(mapper, e, isDown) {
+    if (isDown && e.key === 'F11') { e.preventDefault(); toggleFullscreen(); return true; }
+    if (e.isComposing) return false;
+    const altGr = e.getModifierState && e.getModifierState('AltGraph');
+    const shortcut = (e.ctrlKey || e.metaKey || e.altKey) && !altGr;
+    // Let Ctrl/Cmd+V reach the paste event, which types the computer's clipboard
+    if (isDown && shortcut && e.code === 'KeyV' && !e.altKey) return false;
+    // Plain characters go as text, so the computer's keyboard layout is respected (ñ, ç, é...)
+    if (isDown && !shortcut && e.key.length >= 1 && [...e.key].length === 1) {
+      mapper.send({ type: 'text', content: e.key });
+      return true;
+    }
+    let code = e.code;
+    if (IS_MAC && (code === 'MetaLeft' || code === 'MetaRight')) code = code === 'MetaLeft' ? 'ControlLeft' : 'ControlRight';
+    const keycode = ANDROID_KEYCODES[code];
+    if (!keycode) return false;
+    if (!isDown && !this.downKeys.has(code)) return false; // its keydown went as text
+    if (isDown) this.downKeys.add(code); else this.downKeys.delete(code);
+    mapper.send({ type: 'keycode', action: isDown ? 'down' : 'up', keycode, meta: androidMeta(e), repeat: e.repeat ? 1 : 0 });
+    return true;
+  },
+
+  releaseKeys(mapper) {
+    for (const code of this.downKeys) mapper.send({ type: 'keycode', action: 'up', keycode: ANDROID_KEYCODES[code], meta: 0, repeat: 0 });
+    this.downKeys.clear();
+  },
+};
+
 class InputMapper {
   constructor(canvas, send) {
     this.canvas = canvas;
     this.send = send;
     this.press = null;
-    this.live = false; // phone takes touch down/move/up as they happen (its info says so)
     this.hAccum = 0; this.hTime = 0; this.hFired = false;
     this.vAccum = 0;
     this.lastScroll = 0;
+    this.desktop = false;
 
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
     canvas.addEventListener('pointermove', (e) => this.onMove(e));
     canvas.addEventListener('pointerup', (e) => this.onUp(e));
-    canvas.addEventListener('pointercancel', () => {
-      if (this.live && this.press && !this.press.suppressed) this.send({ type: 'touch', action: 'cancel' });
-      this.press = null;
-    });
+    canvas.addEventListener('pointercancel', () => { this.press = null; });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
   }
@@ -524,8 +623,15 @@ class InputMapper {
     return { x: Math.min(Math.max(x, 0), this.canvas.width - 1), y: Math.min(Math.max(y, 0), this.canvas.height - 1) };
   }
 
+  setDesktop(on) {
+    if (this.desktop && !on) DesktopInput.releaseKeys(this);
+    this.desktop = on;
+    this.press = null;
+  }
+
   onDown(e) {
     ui.stage.focus({ preventScroll: true });
+    if (this.desktop) { DesktopInput.down(this, e); return; }
     if (e.button === 1 || e.button === 2) { e.preventDefault(); this.send({ type: 'key', action: 'back' }); return; }
     if (e.button !== 0) return;
     e.preventDefault();
@@ -533,31 +639,22 @@ class InputMapper {
     const p = this.toPhone(e);
     const now = performance.now();
     this.press = { x: p.x, y: p.y, lx: p.x, ly: p.y, t: now, moved: false, suppressed: now - this.lastScroll < SCROLL_COOLDOWN };
-    if (this.live && !this.press.suppressed) this.touch('down', p);
-  }
-
-  touch(action, p) {
-    this.send({ type: 'touch', action, x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 });
   }
 
   onMove(e) {
+    if (this.desktop) { DesktopInput.move(this, e); return; }
     const s = this.press;
     if (!s) return;
     const p = this.toPhone(e);
     if (Math.abs(p.x - s.x) > TAP_THRESHOLD || Math.abs(p.y - s.y) > TAP_THRESHOLD) s.moved = true;
     s.lx = p.x; s.ly = p.y;
-    if (this.live && !s.suppressed) this.touch('move', p);
   }
 
   onUp(e) {
+    if (this.desktop) { DesktopInput.up(this, e); return; }
     const s = this.press;
     if (!s || e.button !== 0) return;
     this.press = null;
-    if (this.live) {
-      // The finger is already down on the phone, so it always comes back up
-      if (!s.suppressed) this.touch('up', this.toPhone(e));
-      return;
-    }
     const now = performance.now();
     if (s.suppressed || now - this.lastScroll < SCROLL_COOLDOWN) return;
     const elapsed = now - s.t;
@@ -573,6 +670,7 @@ class InputMapper {
   }
 
   onWheel(e) {
+    if (this.desktop) { DesktopInput.wheel(this, e); return; }
     e.preventDefault();
     const now = performance.now();
     const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
@@ -602,13 +700,16 @@ class InputMapper {
     this.send({ type: 'scroll', x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, dx: Math.round(dx * 10) / 10, dy: Math.round(-step * VSCROLL_GAIN * 10) / 10 });
   }
 
+  onKeyUp(e) {
+    return this.desktop ? DesktopInput.key(this, e, false) : false;
+  }
+
   /** Returns true when the key was consumed. */
   onKey(e) {
+    if (this.desktop) return DesktopInput.key(this, e, true);
     if (e.isComposing) return false;
-    const mod = e.ctrlKey || e.metaKey;
-    // A held system key or shortcut fires once; only text, Backspace and Delete auto-repeat (as on the desktop)
-    if (e.repeat && (e.key === 'F11' || KEY_ACTIONS[e.key] || (mod && CTRL_COMMANDS[e.key.toLowerCase()]))) return true;
     if (e.key === 'F11') { e.preventDefault(); toggleFullscreen(); return true; }
+    const mod = e.ctrlKey || e.metaKey;
     const altGr = e.getModifierState && e.getModifierState('AltGraph');
     if (KEY_ACTIONS[e.key] && !mod) { this.send({ type: 'key', action: KEY_ACTIONS[e.key] }); return true; }
     if (KEY_COMMANDS[e.key] && !mod) { this.send(KEY_COMMANDS[e.key]); return true; }
@@ -635,20 +736,13 @@ class PhoneConnection {
     this.wantConnected = false;
     this.everOpened = false;
     this.granted = false;
-    this.controlOff = false;
     this.delay = RECONNECT_BASE;
     this.attempt = 0;
     this.retryTimer = null;
     this.key = '';
     this.host = ''; this.port = '';
     this.info = null;
-    this.fingerprint = '';
-    this.video = pickVideoPipeline((e) => this.useMse(e));
-    // The phone sends a keyframe only about every 10 s. MSE needs them often to stay at the
-    // live edge, and a WebCodecs decoder that lost its place needs one to restart.
-    setInterval(() => {
-      if (this.video instanceof MsePipeline || this.video.needKey) this.sendCommand({ type: 'request_keyframe' });
-    }, 1000);
+    this.video = pickVideoPipeline();
     this.audio = new AudioPipeline();
     this.input = new InputMapper(ui.canvas, (cmd) => this.sendCommand(cmd));
   }
@@ -656,10 +750,9 @@ class PhoneConnection {
   get url() { return this.scheme + '://' + (this.host.includes(':') ? '[' + this.host + ']' : this.host) + ':' + this.port; }
   get certUrl() { return 'https://' + (this.host.includes(':') ? '[' + this.host + ']' : this.host) + ':' + this.port + '/'; }
 
-  start(host, port, scheme = 'wss', fingerprint = '') {
+  start(host, port, scheme = 'wss') {
     this.stop();
     this.host = host; this.port = port; this.scheme = scheme;
-    this.fingerprint = fingerprint; // fixed for the session, so edits to the box do not change the answer
     this.key = phoneKey(host, port);
     this.wantConnected = true;
     this.everOpened = false;
@@ -717,7 +810,7 @@ class PhoneConnection {
       client: ('RemotePhone Web on ' + browserName()).slice(0, 40),
       id: this.clientId(),
       maxWidth: 1920, maxHeight: 1920, maxFps: 60,
-      videoBitrate: 20_000_000, audioBitrate: 128_000,
+      videoBitrate: 8_000_000, audioBitrate: 128_000,
     }));
   }
 
@@ -732,6 +825,7 @@ class PhoneConnection {
     if (type <= FRAME_VIDEO_DELTA) {
       this.video.feed(type, payload);
       if (type === FRAME_VIDEO_KEY && ui.hint.style.display !== 'none') setHint('');
+      if (type === FRAME_VIDEO_KEY) document.body.classList.add('has-picture');
     } else if (type === FRAME_AUDIO_DATA) {
       this.audio.feed(payload);
     } else if (type === FRAME_AUDIO_CONFIG) {
@@ -745,9 +839,12 @@ class PhoneConnection {
     switch (msg.type) {
       case 'info':
         this.info = msg;
+        if (msg.device) document.title = msg.device + ' — RemotePhone';
+        this.input.setDesktop(!!msg.desktop);
+        document.body.classList.toggle('desktop', !!msg.desktop);
+        showPhoneScreen(msg);
         if (this.video.setScreenSize) this.video.setScreenSize(msg.screenWidth, msg.screenHeight);
         ui.audio.disabled = !msg.audioAvailable;
-        this.input.live = !!msg.liveTouch;
         if (!this.granted) setStatus('Connected to ' + (msg.device || 'phone') + ' — waiting for approval…');
         break;
       case 'approval':
@@ -758,7 +855,7 @@ class PhoneConnection {
         } else if (msg.state === 'granted') {
           this.granted = true;
           updateButtons();
-          this.showConnected();
+          setStatus('Connected to ' + ((this.info && this.info.device) || 'phone') + (this.info && this.info.desktop ? ' · desktop' : '') + (this.video instanceof MsePipeline ? ' (MSE)' : ''), 'ok');
           setHint('Waiting for the first picture…');
           ui.stage.focus({ preventScroll: true });
           if (ui.audio.checked) this.sendCommand({ type: 'toggle_audio', enabled: true });
@@ -766,7 +863,8 @@ class PhoneConnection {
         break;
       case 'challenge': {
         const secret = store.get(this.key + '/secret');
-        if (!secret || !this.fingerprint || !crypto.subtle) {
+        const fp = normalizeFingerprint(ui.fingerprint.value);
+        if (!secret || fp.length !== 64 || !crypto.subtle) {
           // Without the certificate fingerprint the challenge can't be answered from a browser.
           // Fall back to a fresh identity, which makes the phone ask its owner again.
           this.forgetIdentity();
@@ -774,45 +872,21 @@ class PhoneConnection {
           this.rawReconnect();
           return;
         }
-        const mac = await hmacHex(secret, (msg.nonce || '') + '|' + this.fingerprint);
+        const mac = await hmacHex(secret, (msg.nonce || '') + '|' + fp);
         this.sendCommand({ type: 'auth', mac });
         break;
       }
       case 'clipboard':
-        if (!msg.content) break;
-        // No clipboard API over plain http: hand the text over in a prompt instead of losing it
-        (navigator.clipboard ? navigator.clipboard.writeText(msg.content) : Promise.reject()).then(
-          () => this.controlOff || setStatus('Copied to clipboard (' + msg.content.length + ' chars)', 'ok'),
-          () => { setStatus('Browser refused clipboard access', 'err'); prompt('Phone clipboard (copy it from here):', msg.content); });
-        break;
-      case 'audio': {
-        // The phone's own switch, whichever side flipped it; an echo of our own toggle changes nothing
-        const on = msg.enabled === true;
-        if (on === ui.audio.checked) break;
-        ui.audio.checked = on;
-        if (!on) { this.audio.stop(); break; }
-        this.audio.start();
-        // Outside a click the browser may keep the context suspended: show audio as off so a click starts it
-        const ctx = this.audio.ctx;
-        setTimeout(() => {
-          if (ctx === this.audio.ctx && ctx.state !== 'running') { this.audio.stop(); ui.audio.checked = false; }
-        }, 1000);
-        break;
-      }
-      case 'control':
-        // Off while the phone's accessibility service is not running: it drops input, the picture keeps coming
-        this.controlOff = msg.enabled !== true;
-        this.showConnected();
+        if (msg.content) {
+          navigator.clipboard?.writeText(msg.content).then(
+            () => setStatus('Copied to clipboard (' + msg.content.length + ' chars)', 'ok'),
+            () => setStatus('Phone clipboard received, but the browser refused clipboard access', 'err'));
+        }
         break;
       case 'error':
         setStatus(msg.message || 'Unknown error', 'err');
         break;
     }
-  }
-
-  showConnected() {
-    if (this.controlOff) setStatus('Remote control is off on the phone', 'err');
-    else setStatus('Connected to ' + ((this.info && this.info.device) || 'phone') + (this.video instanceof MsePipeline ? ' (MSE)' : ''), 'ok');
   }
 
   /** Close and reopen immediately (used after rotating identity). */
@@ -821,17 +895,6 @@ class PhoneConnection {
     this.ws = null;
     if (old) { old.onclose = null; try { old.close(1000); } catch { /* ignore */ } }
     this.open();
-  }
-
-  /** WebCodecs is present but cannot decode this stream (no H.264 decoder, odd profile): use MSE. */
-  useMse(e) {
-    const old = this.video, config = old.config;
-    if (!MsePipeline.supported()) { setStatus('This browser cannot decode the phone\'s video: ' + (e.message || e), 'err'); return; }
-    console.warn('WebCodecs cannot decode this stream, switching to MSE:', e);
-    old.reset();
-    this.video = new MsePipeline(ui.canvas, fitCanvas);
-    if (this.info) this.video.setScreenSize(this.info.screenWidth, this.info.screenHeight);
-    if (config) this.video.feed(FRAME_VIDEO_CONFIG, config);
   }
 
   onClose(ev) {
@@ -877,7 +940,9 @@ class PhoneConnection {
 
   onDisconnected() {
     this.granted = false;
-    this.controlOff = false;
+    document.body.classList.remove('phone-screen-control');
+    document.body.classList.remove('has-picture');
+    this.input.setDesktop(false);
     this.video?.reset();
     ui.audio.disabled = true;
     ui.audio.checked = false;
@@ -916,58 +981,57 @@ function toggleFullscreen() {
   else document.documentElement.requestFullscreen?.();
 }
 
-function pickVideoPipeline(onUnsupported) {
+function pickVideoPipeline() {
   const forced = new URLSearchParams(location.search).get('decoder');
   const onSize = () => fitCanvas();
   // WebCodecs is only exposed in secure contexts; MSE also works over plain http on the LAN
-  if (forced !== 'mse' && window.isSecureContext && VideoPipeline.supported()) return new VideoPipeline(ui.canvas, onSize, onUnsupported);
+  if (forced !== 'mse' && window.isSecureContext && VideoPipeline.supported()) return new VideoPipeline(ui.canvas, onSize);
   if (forced !== 'webcodecs' && MsePipeline.supported()) return new MsePipeline(ui.canvas, onSize);
   return null;
 }
 
 const conn = new PhoneConnection();
 
+/** Swap the Material icon inside an icon button and keep its label/tooltip in step. */
+function setIconButton(button, icon, label) {
+  button.querySelector('use').setAttribute('href', '#i-' + icon);
+  button.setAttribute('aria-label', label);
+  button.dataset.tip = label;
+}
+
 function updateButtons() {
   const active = conn.wantConnected;
-  ui.connect.textContent = active ? 'Disconnect' : 'Connect';
-  ui.connect.classList.toggle('primary', !active);
+  setIconButton(ui.connect, active ? 'link-off' : 'link', active ? 'Disconnect' : 'Connect');
+  ui.connect.classList.toggle('filled', !active);
+  ui.connect.classList.toggle('danger', active);
   ui.host.disabled = ui.port.disabled = active;
   for (const b of document.querySelectorAll('footer button[data-key]')) b.disabled = !conn.granted;
 }
 
-// True while the fingerprint box holds something the user entered rather than a value restored
-// from storage, so changing the host afterwards must not wipe it (paste first, then type the IP)
-let fpTyped = false;
-
 ui.connect.addEventListener('click', () => {
   if (conn.wantConnected) { conn.stop(); setStatus('Disconnected'); return; }
-  if (showFingerprintState() === 'invalid') { ui.fingerprint.closest('details').open = true; ui.fingerprint.focus(); return; }
+  if (showFingerprintState() === 'invalid') { $('fpMenu').open = true; ui.fingerprint.focus(); return; }
   // "ws://host" forces plain WebSocket (e.g. behind a TLS-terminating proxy or for testing)
   const raw = ui.host.value.trim();
   const scheme = /^ws:\/\//i.test(raw) ? 'ws' : 'wss';
-  let host = raw.replace(/^wss?:\/\//i, '').replace(/[\/\s].*$/, '');
-  // "192.168.1.5:8765" typed into the host box: the port belongs in its own field
-  const hostPort = host.match(/^([^:\[\]]+):(\d+)$/);
-  if (hostPort) { host = hostPort[1]; ui.host.value = (scheme === 'ws' ? 'ws://' : '') + host; ui.port.value = hostPort[2]; }
+  const host = raw.replace(/^wss?:\/\//i, '').replace(/[\/\s].*$/, '');
   const port = (ui.port.value.trim() || '8765');
   if (!host) { ui.host.focus(); return; }
   store.set('last/host', host);
   store.set('last/port', port);
   // Saved now, keyed by the host being connected to: pasting the fingerprint before typing the
-  // IP used to store it under an empty host. An emptied box forgets the stored value as well.
+  // IP used to store it under an empty host
   const fp = fingerprintState(ui.fingerprint.value);
-  if (fp.state === 'ok') store.set('fp/' + host, fp.fp); else store.del('fp/' + host);
-  fpTyped = false;
+  if (fp.state === 'ok') store.set('fp/' + host, fp.fp);
   setHint('');
-  conn.start(host, port, scheme, fp.fp);
+  conn.start(host, port, scheme);
   updateButtons();
 });
 
 for (const el of [ui.host, ui.port]) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') ui.connect.click(); });
 
-ui.fingerprint.addEventListener('input', () => { fpTyped = !!ui.fingerprint.value.trim(); showFingerprintState(); });
+ui.fingerprint.addEventListener('input', showFingerprintState);
 ui.host.addEventListener('change', () => {
-  if (fpTyped) return;
   ui.fingerprint.value = store.get('fp/' + ui.host.value.trim());
   showFingerprintState();
 });
@@ -976,13 +1040,72 @@ ui.audio.addEventListener('change', () => {
   // Starting the AudioContext inside this click satisfies the browser autoplay policy
   if (ui.audio.checked) conn.audio.start(); else conn.audio.stop();
   conn.sendCommand({ type: 'toggle_audio', enabled: ui.audio.checked });
-  ui.stage.focus({ preventScroll: true }); // keys go to the phone again, not to the checkbox
 });
 
 for (const b of document.querySelectorAll('footer button[data-key]')) {
   b.addEventListener('click', () => { conn.sendCommand({ type: 'key', action: b.dataset.key }); ui.stage.focus({ preventScroll: true }); });
 }
 ui.fullscreen.addEventListener('click', toggleFullscreen);
+
+// Desktop mode: power the phone's own panel off, or cover it in black, while the desktop keeps
+// running. The phone reports the real state in every info message.
+const phoneScreenButtons = { off: $('phoneScreenOff'), blackout: $('phoneBlackout') };
+function showPhoneScreen(info) {
+  document.body.classList.toggle('phone-screen-control', !!info.phoneScreenControl);
+  phoneScreenButtons.off.setAttribute('aria-pressed', String(!!info.phoneScreenOff));
+  phoneScreenButtons.blackout.setAttribute('aria-pressed', String(!!info.phoneBlackout));
+  setIconButton(phoneScreenButtons.off, 'phone-off', info.phoneScreenOff ? 'Turn the phone screen on' : 'Turn the phone screen off');
+  setIconButton(phoneScreenButtons.blackout, 'dark', info.phoneBlackout ? 'Remove the black screen' : 'Black phone screen');
+}
+phoneScreenButtons.off.addEventListener('click', () => {
+  conn.sendCommand({ type: 'phone_screen', off: phoneScreenButtons.off.getAttribute('aria-pressed') !== 'true' });
+  ui.stage.focus({ preventScroll: true });
+});
+phoneScreenButtons.blackout.addEventListener('click', () => {
+  conn.sendCommand({ type: 'phone_blackout', on: phoneScreenButtons.blackout.getAttribute('aria-pressed') !== 'true' });
+  ui.stage.focus({ preventScroll: true });
+});
+document.addEventListener('fullscreenchange', () => {
+  const on = !!document.fullscreenElement;
+  setIconButton(ui.fullscreen, on ? 'fullscreen-exit' : 'fullscreen', on ? 'Exit fullscreen (F11)' : 'Fullscreen (F11)');
+});
+
+// Hide the top and bottom bars: the picture takes the whole window, a small floating button
+// (or F9) brings them back. Remembered across visits.
+const showBarsButton = $('showBars');
+function setBarsHidden(hidden) {
+  document.body.classList.toggle('bars-hidden', hidden);
+  store.set('ui/barsHidden', hidden ? '1' : '');
+  if (hidden) { $('fpMenu').open = false; nudgeShowBars(); }
+  ui.stage.focus({ preventScroll: true });
+}
+let nudgeTimer = 0;
+// The floating button stays faint over the picture; it lights up for a moment when the pointer moves
+function nudgeShowBars() {
+  document.body.classList.add('pointer-recent');
+  clearTimeout(nudgeTimer);
+  nudgeTimer = setTimeout(() => document.body.classList.remove('pointer-recent'), 2000);
+}
+$('hideBars').addEventListener('click', () => setBarsHidden(true));
+showBarsButton.addEventListener('click', () => setBarsHidden(false));
+document.addEventListener('pointermove', (e) => {
+  if (document.body.classList.contains('bars-hidden') && e.pointerType === 'mouse') nudgeShowBars();
+}, { passive: true });
+// Capture phase, so F9 also works while keys are being forwarded to the phone (desktop mode too)
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'F9' || e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (!e.repeat) setBarsHidden(!document.body.classList.contains('bars-hidden'));
+}, true);
+document.addEventListener('keyup', (e) => { if (e.key === 'F9') e.stopImmediatePropagation(); }, true);
+if (store.get('ui/barsHidden')) setBarsHidden(true);
+
+// Fingerprint menu: closes on a click elsewhere or Esc, like a Material menu
+const fpMenu = $('fpMenu');
+fpMenu.addEventListener('toggle', () => { if (fpMenu.open) setTimeout(() => ui.fingerprint.focus(), 0); });
+document.addEventListener('pointerdown', (e) => { if (fpMenu.open && !fpMenu.contains(e.target)) fpMenu.open = false; });
+ui.fingerprint.addEventListener('keydown', (e) => { if (e.key === 'Escape' || e.key === 'Enter') { fpMenu.open = false; ui.stage.focus({ preventScroll: true }); } });
 
 function typingInPageField(e) {
   const t = e.target;
@@ -993,6 +1116,12 @@ document.addEventListener('keydown', (e) => {
   if (!conn.granted || typingInPageField(e)) return;
   if (conn.input.onKey(e)) e.preventDefault();
 });
+document.addEventListener('keyup', (e) => {
+  if (!conn.granted || typingInPageField(e)) return;
+  if (conn.input.onKeyUp(e)) e.preventDefault();
+});
+// Keys held while the window loses focus would stay down on the phone
+window.addEventListener('blur', () => { if (conn.input.desktop) DesktopInput.releaseKeys(conn.input); });
 
 // Ctrl/Cmd+V: type the computer's clipboard into the phone; empty clipboard falls back to the phone's paste
 document.addEventListener('paste', (e) => {
@@ -1009,7 +1138,6 @@ const params = new URLSearchParams(location.search);
 ui.host.value = params.get('host') || store.get('last/host');
 ui.port.value = params.get('port') || store.get('last/port', '8765');
 ui.fingerprint.value = params.get('fp') || store.get('fp/' + ui.host.value);
-fpTyped = !!params.get('fp');
 showFingerprintState();
 fitCanvas();
 updateButtons();
@@ -1040,7 +1168,7 @@ addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   installPrompt = e;
   installButton.hidden = false;
-  setHint('RemotePhone can be installed as an app, with its own window and icon.<br>Press <b>Install</b>, or use your browser menu.');
+  if (!conn.wantConnected) setHint('RemotePhone can be installed as an app, with its own window and icon.<br>Use the <b>install</b> button at the top right, or your browser menu.');
 });
 
 addEventListener('appinstalled', () => {

@@ -4,14 +4,11 @@
 import { readFileSync } from 'node:fs';
 
 const src = readFileSync(new URL('../remotephone.js', import.meta.url), 'utf8');
-// Each helper is a top-level function closed by a brace in column 0
-function fn(name) {
-  const m = src.match(new RegExp('^function ' + name + '\\(.*?^\\}', 'ms'));
-  if (!m) throw new Error(name + ' not found in remotephone.js');
-  return m[0];
-}
+const from = src.indexOf('function normalizeFingerprint');
+const to = src.indexOf('// Browsers cannot read the peer certificate');
+if (from < 0 || to < from) throw new Error('fingerprint helpers not found in remotephone.js');
 const { normalizeFingerprint, fingerprintState } =
-  new Function(fn('normalizeFingerprint') + fn('fingerprintState') + '\nreturn { normalizeFingerprint, fingerprintState };')();
+  new Function(src.slice(from, to) + '\nreturn { normalizeFingerprint, fingerprintState };')();
 
 const fp = 'A1'.repeat(32);
 

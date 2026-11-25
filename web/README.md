@@ -21,8 +21,7 @@ No WebAssembly is needed. Video is decoded natively in one of two ways:
 
 ## Use
 
-1. Use the hosted copy at <https://dpk404.github.io/remote-phone/> (deployed from this folder on every
-   release), host the `web/` folder anywhere static (nginx, `python3 -m http.server`), or open
+1. Host the `web/` folder anywhere static (GitHub Pages, nginx, `python3 -m http.server`), or open
    `index.html` directly. Over `https://`, `http://localhost` or `file://` WebCodecs is used; elsewhere the MSE fallback.
 2. Start mirroring on the phone and note its IP.
 3. **Once per browser:** open `https://<phone-ip>:8765` and accept the self-signed certificate warning
@@ -31,10 +30,9 @@ No WebAssembly is needed. Video is decoded natively in one of two ways:
 
 Bookmarkable: `index.html?host=192.168.1.42&port=8765&connect=1` (add `&fp=<fingerprint>`, see below).
 
-Controls follow the desktop client: click = tap, drag = a live drag on Android 8+ (the phone follows the
-pointer; older phones get a swipe on release), hold = long press, wheel = scroll (in steps; the live trackpad scroll is desktop only),
-horizontal two-finger swipe / right or middle click / Esc = Back, Home = home, F2 recents, F5 notifications, F6 quick settings,
-F10 lock, F11 fullscreen, typing goes to the focused field, Ctrl/Cmd + A/C/X, Ctrl/Cmd+V pastes the computer clipboard.
+Controls match the desktop client: click = tap, drag = swipe, hold = long press, wheel = scroll,
+horizontal two-finger swipe / right or middle click / Esc = Back, F2 recents, F5 notifications, F6 quick settings,
+F10 lock, F11 fullscreen, F9 hides or shows the top and bottom bars (also from the bar's own button; a small floating button brings them back), typing goes to the focused field, Ctrl/Cmd + A/C/X, Ctrl/Cmd+V pastes the computer clipboard.
 Touch screens work too (pointer events).
 
 ## The certificate fingerprint (optional)
@@ -65,5 +63,41 @@ uv venv /tmp/rp-venv && uv pip install --python /tmp/rp-venv/bin/python websocke
 ```
 
 Type `ws://localhost` as host to use plain WebSocket against the mock. `test/e2e_cdp.mjs` drives a headless
-Chromium over CDP (connect, decode, tap, drag, long press, back, scroll, keys, copy) and saves a screenshot.
-The mock offers live touch, so presses arrive as `touch` down, move and up.
+Chromium over CDP (connect, decode, tap, swipe, long press, back, scroll, keys, copy) and saves a screenshot.
+
+When the phone runs in [desktop mode](../docs/desktop-mode.md) (Samsung DeX / Android desktop), the client switches to real mouse and keyboard input: hover, right click, wheel, key events and shortcuts.
+
+## Served by the phone
+
+The APK also ships these two files. With **Web Client** switched on in the app, the phone serves them
+over HTTPS on port **8766** while mirroring, using its own certificate. The app shows
+`https://<phone-ip>:8766` and a **Share** button; the shared link carries `host`, `port`, `fp`
+(the certificate fingerprint) and `connect=1`, so the page connects to that phone at once and
+remembered computers work without pasting anything.
+
+Accept the certificate warning once when opening the page. Chrome/Edge remember it per host, which
+also covers the WebSocket on 8765; Firefox remembers it per port, so the page then shows a link to
+accept `https://<phone-ip>:8765` too.
+
+## Install it as an app (PWA)
+
+The folder is also a web app manifest plus a service worker, so the browser can install it: its own
+window, its own icon, no address bar, and the shell is cached so it opens offline (`sw.js`).
+
+- **Chrome/Edge (desktop or Android):** an **Install** button appears in the header; the browser menu
+  has the same entry. Needs `https://` or `localhost` — a plain `http://` address on the LAN cannot
+  register a service worker.
+- **Safari (iOS/iPadOS and macOS):** **Share → Add to Home Screen** / **File → Add to Dock**.
+- **Firefox:** no install prompt on desktop; Firefox for Android has **Add to Home screen**.
+
+Only the shell is cached. The phone is always reached live over the WebSocket, so nothing about the
+mirroring works offline, and the certificate warning for `https://<phone-ip>:8765` still has to be
+accepted once per browser.
+
+## Phones, tablets and foldables
+
+The layout follows the window, not the device: the bottom bar becomes a side rail wherever height
+is scarce (phones in landscape, tablets held sideways), touch screens get 48 px targets, and on
+foldables that report their hinge (Viewport Segments API: Chrome on Android foldables) the picture
+takes one half and the other half becomes a panel of large buttons, in book and tabletop posture
+alike, with nothing drawn under the hinge.

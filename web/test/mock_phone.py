@@ -9,6 +9,7 @@ and logs every control command it receives.
     python3 -m venv .venv && .venv/bin/pip install websockets av numpy
     .venv/bin/python web/test/mock_phone.py            # ws://localhost:8765  (plain, for automation)
     .venv/bin/python web/test/mock_phone.py --tls      # wss:// with a throwaway self-signed cert
+    .venv/bin/python web/test/mock_phone.py --desktop  # desktop mode (info.desktop, 1280x720)
 """
 import argparse, asyncio, hashlib, hmac, json, os, secrets, ssl, struct, subprocess, tempfile, time
 
@@ -16,11 +17,12 @@ import websockets
 
 W, H = 540, 1170
 FAKE_FP = "AB" * 32
+DESKTOP = False
 
 def encode_stream():
     """10 s of a moving test pattern, H.264 baseline, keyframe every second (like the phone)."""
     import av, numpy as np
-    out = os.path.join(tempfile.gettempdir(), "remotephone-mock.h264")
+    out = os.path.join(tempfile.gettempdir(), f"remotephone-mock-{W}x{H}.h264")
     if not os.path.exists(out):
         with av.open(out, "w", format="h264") as c:
             s = c.add_stream("libx264", rate=30)
@@ -63,18 +65,15 @@ def frame(t, payload, ts=0):
 approved = {}  # id -> secret
 
 async def handler(ws, fp):
-    try:
-        await session(ws, fp)
-    except websockets.ConnectionClosed:  # the client may drop the socket at any point, e.g. to re-ask for approval
-        pass
-
-async def session(ws, fp):
     config, frames = STREAM
     hello = json.loads(await ws.recv())
     print("<-", hello, flush=True)
-    await ws.send(json.dumps({"type": "info", "device": "Mock Pixel", "screenWidth": W, "screenHeight": H,
-                              "audioAvailable": True, "androidVersion": "15",
-                              "liveTouch": True}))
+    screen = {"phoneScreenOff": False, "phoneBlackout": False}  # desktop mode: the phone's own screen
+    def info():
+        return json.dumps({"type": "info", "device": "Mock Pixel", "screenWidth": W, "screenHeight": H,
+                           "audioAvailable": True, "androidVersion": "16", "desktop": DESKTOP,
+                           "phoneScreenControl": DESKTOP, **screen})
+    await ws.send(info())
     cid = hello.get("id")
     if cid in approved:
         nonce = secrets.token_hex(32)
@@ -97,11 +96,10 @@ async def session(ws, fp):
             print("<-", m, flush=True)
             try:
                 c = json.loads(m)
-                # like the phone: only a real change is applied and announced
-                if c.get("type") == "toggle_audio" and (c.get("enabled") is True) != audio_on:
-                    audio_on = not audio_on
-                    await ws.send(json.dumps({"type": "audio", "enabled": audio_on}))
+                if c.get("type") == "toggle_audio": audio_on = c.get("enabled")
                 if c.get("type") == "copy": await ws.send(json.dumps({"type": "clipboard", "content": "hola desde el móvil"}))
+                if c.get("type") == "phone_screen" and DESKTOP: screen["phoneScreenOff"] = bool(c.get("off")); await ws.send(info())
+                if c.get("type") == "phone_blackout" and DESKTOP: screen["phoneBlackout"] = bool(c.get("on")); await ws.send(info())
             except Exception: pass
     rt = asyncio.create_task(reader())
     try:
@@ -109,6 +107,7 @@ async def session(ws, fp):
         t0 = time.monotonic(); n = 0; phase = 0.0
         while True:
             t, nal = frames[n % len(frames)]
+            if n and n % len(frames) == 0: await ws.send(frame(0x00, config))
             await ws.send(frame(t, nal, int((time.monotonic() - t0) * 1000)))
             if audio_on and n % 3 == 0:  # ~100 ms of a 440 Hz tone
                 import math
@@ -119,12 +118,17 @@ async def session(ws, fp):
                 await ws.send(frame(0x11, bytes(buf)))
             n += 1
             await asyncio.sleep(max(0, t0 + n / 30 - time.monotonic()))
+    except websockets.ConnectionClosed:
+        pass
     finally:
         rt.cancel()
 
 async def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--tls", action="store_true"); ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--desktop", action="store_true", help="pretend to stream a desktop display (DeX)")
     a = ap.parse_args()
+    global W, H, DESKTOP
+    if a.desktop: W, H, DESKTOP = 1280, 720, True
     global STREAM; STREAM = encode_stream()
     print(f"config {len(STREAM[0])}B, {len(STREAM[1])} frames", flush=True)
     sslctx, fp = None, FAKE_FP
