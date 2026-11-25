@@ -49,6 +49,13 @@ android {
         }
     }
 
+    lint {
+        // Desktop mode uses these APIs only through Shizuku's privileged process.
+        // Android lint cannot model that execution context, but they are required
+        // for the fork's DeX display support.
+        disable += "BlockedPrivateApi"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
